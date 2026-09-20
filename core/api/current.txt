@@ -2475,6 +2475,10 @@ package android {
     field public static final int toast_frame = 17301654; // 0x1080096
     field public static final int zoom_plate = 17301655; // 0x1080097
   }
+  
+  public static final class R.font {
+    ctor public R.font();
+  }
 
   public static final class R.fraction {
     ctor public R.fraction();
