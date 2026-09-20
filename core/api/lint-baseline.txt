@@ -1186,6 +1186,10 @@ Todo: android.hardware.camera2.params.StreamConfigurationMap:
 Todo: android.provider.ContactsContract.RawContacts#newEntityIterator(android.database.Cursor):
     Documentation mentions 'TODO'
 
+UnflaggedApi: android.R.font:
+    New API must be flagged with @FlaggedApi: class android.R.font
+UnflaggedApi: android.R.font#font():
+    New API must be flagged with @FlaggedApi: constructor android.R.font()
 
 UnflaggedApi: android.app.Notification#FLAG_ALWAYS_SHOW_TICKER:
     New API must be flagged with @FlaggedApi: field android.app.Notification.FLAG_ALWAYS_SHOW_TICKER
