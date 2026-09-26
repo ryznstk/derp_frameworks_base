@@ -17,12 +17,16 @@
 package com.android.systemui.statusbar.quickactions.island.ui.compose
 
 import android.view.DisplayCutout
+import android.view.HapticFeedbackConstants
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -57,14 +61,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.android.systemui.common.ui.compose.Icon
+import com.android.systemui.statusbar.quickactions.island.shared.DynamicIslandFeatureSettings
+import com.android.systemui.statusbar.quickactions.island.shared.DynamicIslandFeatureSettings.observeDynamicIslandScale
 import com.android.systemui.statusbar.quickactions.island.shared.DynamicIslandFeatureSettings.observeDynamicIslandWidth
 import com.android.systemui.statusbar.quickactions.island.ui.model.PopupChipModel
 import com.android.systemui.statusbar.quickactions.island.ui.model.PopupContentModel
 import com.android.systemui.statusbar.quickactions.island.screenrecord.shared.model.ScreenRecordPopupModel
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.launch
 
 /** Single centered status bar capsule styled like a compact dynamic island. */
 @Composable
@@ -78,6 +82,21 @@ fun StatusBarDynamicIslandChip(
     val isMediaChip = viewModel.popupContent is PopupContentModel.Media
     val chipShape = RoundedCornerShape(50)
     val colors = viewModel.colors
+    val heightScale = rememberDynamicIslandHeightScale()
+    val view = LocalView.current
+    val hapticOnTap: () -> Unit = {
+        view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+        onTap()
+    }
+    val mediaOpenApp: (() -> Unit)? =
+        (viewModel.popupContent as? PopupContentModel.Media)
+            ?.takeIf { it.model.isPlaying }
+            ?.model
+            ?.openApp
+    val hapticOnLongPress: () -> Unit = {
+        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        mediaOpenApp?.invoke()
+    }
     val chipBackgroundColor =
         colors.chipBackground(
             isPopupShown = viewModel.isPopupShown,
@@ -96,8 +115,9 @@ fun StatusBarDynamicIslandChip(
     if (viewModel.popupContent.isUtilityStatusContent() && viewModel.icons.isNotEmpty()) {
         UtilityStatusIslandChip(
             viewModel = viewModel,
-            onTap = onTap,
+            onTap = hapticOnTap,
             cutoutSpec = cutoutSpec,
+            heightScale = heightScale,
             chipBackgroundColor = chipBackgroundColor,
             chipContentColor = chipContentColor,
             chipOutline = chipOutline,
@@ -134,21 +154,26 @@ fun StatusBarDynamicIslandChip(
     val maxTextWidth =
         (CompactIslandMaxWidth - 24.dp - leadingDecorationWidth - trailingDecorationWidth)
             .coerceAtLeast(56.dp)
+    val collapseState = rememberDynamicIslandCollapseState(viewModel.isPopupShown)
 
     Row(
         modifier =
             modifier
-                .openSquishAnimation(viewModel.isPopupShown)
-                .defaultMinSize(minHeight = 32.dp)
+                .defaultMinSize(minHeight = 32.dp * heightScale)
                 .widthIn(
                     min = compactWidth,
                     max = compactWidth.coerceAtMost(CompactIslandMaxWidth),
                 )
+                .graphicsLayer { scaleX = collapseState.scale }
                 .clip(chipShape)
                 .background(chipBackgroundColor)
                 .border(width = 1.dp, color = chipOutline, shape = chipShape)
-                .clickable(onClick = onTap)
-                .padding(horizontal = 12.dp, vertical = 7.dp),
+                .combinedClickable(
+                    onClick = hapticOnTap,
+                    onLongClick = mediaOpenApp?.let { { hapticOnLongPress() } },
+                )
+                .padding(horizontal = 12.dp, vertical = 7.dp * heightScale)
+                .graphicsLayer { alpha = collapseState.contentAlpha },
         horizontalArrangement =
             if (isMediaChip) Arrangement.SpaceBetween else Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -240,6 +265,7 @@ private fun UtilityStatusIslandChip(
     viewModel: PopupChipModel.Shown,
     onTap: () -> Unit,
     cutoutSpec: DynamicIslandCutoutSpec,
+    heightScale: Float = 1f,
     chipBackgroundColor: Color,
     chipContentColor: Color,
     chipOutline: Color,
@@ -274,17 +300,19 @@ private fun UtilityStatusIslandChip(
             is PopupContentModel.Flashlight -> viewModel.chipText.orEmpty()
             else -> ""
         }
+    val collapseState = rememberDynamicIslandCollapseState(viewModel.isPopupShown)
 
     Row(
         modifier =
             modifier
-                .openSquishAnimation(viewModel.isPopupShown)
-                .defaultMinSize(minHeight = 32.dp)
+                .graphicsLayer { scaleX = collapseState.scale }
+                .defaultMinSize(minHeight = 32.dp * heightScale)
                 .width(connectedIslandWidth)
                 .clip(RoundedCornerShape(50))
                 .background(chipBackgroundColor)
                 .border(width = 1.dp, color = chipOutline, shape = RoundedCornerShape(50))
-                .clickable(onClick = onTap),
+                .clickable(onClick = onTap)
+                .graphicsLayer { alpha = collapseState.contentAlpha },
         horizontalArrangement = Arrangement.spacedBy(0.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -298,7 +326,12 @@ private fun UtilityStatusIslandChip(
         Box(
             modifier =
                 Modifier.width(rightSegmentWidth)
-                    .padding(start = 6.dp, top = 7.dp, bottom = 7.dp, end = 6.dp),
+                    .padding(
+                        start = 6.dp,
+                        top = 7.dp * heightScale,
+                        bottom = 7.dp * heightScale,
+                        end = 6.dp,
+                    ),
             contentAlignment = Alignment.CenterEnd,
         ) {
             Text(
@@ -434,49 +467,50 @@ private fun compactIslandWidthFor(content: PopupContentModel): Dp? {
 }
 
 @Composable
-private fun Modifier.openSquishAnimation(isOpen: Boolean): Modifier {
-    val scaleX = remember { Animatable(1f, visibilityThreshold = 0.01f) }
-    val scaleY = remember { Animatable(1f, visibilityThreshold = 0.01f) }
+private fun rememberDynamicIslandHeightScale(): Float {
+    val context = LocalContext.current
+    val heightScale by
+        remember { observeDynamicIslandScale(context, DynamicIslandFeatureSettings.HEIGHT_SCALE) }
+            .collectAsState(initial = 1f)
+    return heightScale
+}
+
+private data class DynamicIslandCollapseState(val scale: Float, val contentAlpha: Float)
+
+@Composable
+private fun rememberDynamicIslandCollapseState(isOpen: Boolean): DynamicIslandCollapseState {
+    val scaleX = remember { Animatable(1f, visibilityThreshold = 0.0005f) }
     val currentIsOpen by rememberUpdatedState(isOpen)
+
     LaunchedEffect(Unit) {
         snapshotFlow { currentIsOpen }
             .drop(1)
             .collectLatest { open ->
-                if (!open) return@collectLatest
-                scaleX.snapTo(1f)
-                scaleY.snapTo(1f)
-                coroutineScope {
-                    launch {
-                        scaleX.animateTo(
-                            targetValue = 1f,
-                            animationSpec =
-                                keyframes {
-                                    durationMillis = 360
-                                    0.9f at 0
-                                    1.05f at 160 using FastOutSlowInEasing
-                                    0.98f at 280
-                                    1f at 360
-                                },
-                        )
-                    }
-                    launch {
-                        scaleY.animateTo(
-                            targetValue = 1f,
-                            animationSpec =
-                                keyframes {
-                                    durationMillis = 360
-                                    1.12f at 0
-                                    0.94f at 160 using FastOutSlowInEasing
-                                    1.02f at 280
-                                    1f at 360
-                                },
-                        )
-                    }
+                if (open) {
+                    scaleX.animateTo(
+                        targetValue = 0f,
+                        animationSpec =
+                            spring(
+                                dampingRatio = 0.9f,
+                                stiffness = Spring.StiffnessMediumLow,
+                            ),
+                    )
+                } else {
+                    scaleX.animateTo(
+                        targetValue = 1f,
+                        animationSpec =
+                            keyframes {
+                                durationMillis = 380
+                                0f at 0
+                                1.08f at 240 using FastOutSlowInEasing
+                                0.96f at 320
+                                1f at 380
+                            },
+                    )
                 }
             }
     }
-    return this.graphicsLayer {
-        this.scaleX = scaleX.value
-        this.scaleY = scaleY.value
-    }
+    val fadeThreshold = 0.7f
+    val alpha = (scaleX.value / fadeThreshold).coerceIn(0f, 1f)
+    return DynamicIslandCollapseState(scale = scaleX.value, contentAlpha = alpha)
 }
