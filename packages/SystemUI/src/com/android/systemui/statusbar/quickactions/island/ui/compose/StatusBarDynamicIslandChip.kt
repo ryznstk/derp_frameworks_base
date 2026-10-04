@@ -16,6 +16,8 @@
 
 package com.android.systemui.statusbar.quickactions.island.ui.compose
 
+import android.graphics.Rect
+import android.graphics.RectF
 import android.view.DisplayCutout
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.core.Animatable
@@ -56,17 +58,21 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.dimensionResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.android.systemui.common.ui.compose.Icon
+import com.android.systemui.res.R
 import com.android.systemui.statusbar.quickactions.island.shared.DynamicIslandFeatureSettings
 import com.android.systemui.statusbar.quickactions.island.shared.DynamicIslandFeatureSettings.observeDynamicIslandScale
+import com.android.systemui.statusbar.quickactions.island.shared.DynamicIslandFeatureSettings.observeDynamicIslandVerticalOffset
 import com.android.systemui.statusbar.quickactions.island.shared.DynamicIslandFeatureSettings.observeDynamicIslandWidth
 import com.android.systemui.statusbar.quickactions.island.ui.model.PopupChipModel
 import com.android.systemui.statusbar.quickactions.island.ui.model.PopupContentModel
 import com.android.systemui.statusbar.quickactions.island.screenrecord.shared.model.ScreenRecordPopupModel
+import kotlin.math.ceil
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
 
@@ -112,12 +118,14 @@ fun StatusBarDynamicIslandChip(
             isPopupShown = viewModel.isPopupShown,
             colorScheme = MaterialTheme.colorScheme,
         )
+    val configuredWidth = rememberDynamicIslandWidth()
     if (viewModel.popupContent.isUtilityStatusContent() && viewModel.icons.isNotEmpty()) {
         UtilityStatusIslandChip(
             viewModel = viewModel,
             onTap = hapticOnTap,
             cutoutSpec = cutoutSpec,
             heightScale = heightScale,
+            configuredWidth = configuredWidth,
             chipBackgroundColor = chipBackgroundColor,
             chipContentColor = chipContentColor,
             chipOutline = chipOutline,
@@ -125,11 +133,6 @@ fun StatusBarDynamicIslandChip(
         )
         return
     }
-
-    val configuredWidthDp by
-        observeDynamicIslandWidth(LocalContext.current).collectAsState(initial = 110)
-    val configuredMaxWidth = configuredWidthDp.dp
-    val compactWidth = compactIslandWidthFor(viewModel.popupContent) ?: configuredMaxWidth
     val hasInlineTimer = viewModel.popupContent is PopupContentModel.Stopwatch
     val trailingDecorationWidth =
         when (val popupContent = viewModel.popupContent) {
@@ -152,18 +155,15 @@ fun StatusBarDynamicIslandChip(
             else -> 18.dp + (8.dp * (viewModel.icons.size - 1))
         }
     val maxTextWidth =
-        (CompactIslandMaxWidth - 24.dp - leadingDecorationWidth - trailingDecorationWidth)
-            .coerceAtLeast(56.dp)
+        (configuredWidth - 24.dp - leadingDecorationWidth - trailingDecorationWidth)
+            .coerceAtLeast(0.dp)
     val collapseState = rememberDynamicIslandCollapseState(viewModel.isPopupShown)
 
     Row(
         modifier =
             modifier
                 .defaultMinSize(minHeight = 32.dp * heightScale)
-                .widthIn(
-                    min = compactWidth,
-                    max = compactWidth.coerceAtMost(CompactIslandMaxWidth),
-                )
+                .width(configuredWidth)
                 .graphicsLayer { scaleX = collapseState.scale }
                 .clip(chipShape)
                 .background(chipBackgroundColor)
@@ -266,25 +266,16 @@ private fun UtilityStatusIslandChip(
     onTap: () -> Unit,
     cutoutSpec: DynamicIslandCutoutSpec,
     heightScale: Float = 1f,
+    configuredWidth: Dp,
     chipBackgroundColor: Color,
     chipContentColor: Color,
     chipOutline: Color,
     modifier: Modifier = Modifier,
 ) {
-    val rightSegmentWidth =
-        when (viewModel.popupContent) {
-            is PopupContentModel.Flashlight -> 52.dp
-            is PopupContentModel.Alarm -> 72.dp
-            else -> 80.dp
-        }
-    val connectedIslandWidth =
-        (CompactUtilityConnectedIslandChromeWidth +
-                cutoutSpec.embeddedGapWidth +
-                rightSegmentWidth)
-            .coerceIn(
-                CompactUtilityConnectedIslandMinWidth,
-                CompactUtilityConnectedIslandMaxWidth,
-            )
+    // The cutout gap is physical, so the pill cannot shrink through the camera hole.
+    val contentFloor =
+        UtilitySideChromeWidth + cutoutSpec.embeddedGapWidth + UtilityTextMinWidth
+    val connectedIslandWidth = maxOf(contentFloor, configuredWidth)
     val utilityText =
         when (val popupContent = viewModel.popupContent) {
             is PopupContentModel.ScreenRecord ->
@@ -325,7 +316,7 @@ private fun UtilityStatusIslandChip(
         Spacer(modifier = Modifier.width(cutoutSpec.embeddedGapWidth))
         Box(
             modifier =
-                Modifier.width(rightSegmentWidth)
+                Modifier.weight(1f)
                     .padding(
                         start = 6.dp,
                         top = 7.dp * heightScale,
@@ -385,15 +376,10 @@ private fun SwipeHint(color: Color) {
     }
 }
 
-private val CompactIslandMaxWidth = 192.dp
-private val CompactMediaIslandWidth = 108.dp
-private val CompactTimerIslandWidth = 116.dp
-private val CompactRecordingIslandWidth = 88.dp
-private val CompactAlarmIslandWidth = 92.dp
-private val CompactUtilityIslandWidth = 74.dp
-private val CompactUtilityConnectedIslandChromeWidth = 42.dp
-private val CompactUtilityConnectedIslandMinWidth = 132.dp
-private val CompactUtilityConnectedIslandMaxWidth = 188.dp
+private val MinDynamicIslandWidth = 80.dp
+private val MaxDynamicIslandWidth = 200.dp
+private val UtilitySideChromeWidth = 36.dp
+private val UtilityTextMinWidth = 48.dp
 private val DynamicIslandEmbeddedGapFallbackWidth = 38.dp
 private val DynamicIslandEmbeddedGapMinWidth = 34.dp
 private val DynamicIslandEmbeddedGapMaxWidth = 88.dp
@@ -402,12 +388,17 @@ private val DynamicIslandEmbeddedGapSidePadding = 10.dp
 data class DynamicIslandCutoutSpec(
     val embeddedGapWidth: Dp,
     val horizontalOffset: Dp,
+    /** The camera's centre in window pixels, or null with no top cutout. */
+    val cutoutCenterX: Float? = null,
+    val verticalOffset: Dp,
 )
 
 @Composable
 fun rememberDynamicIslandCutoutSpec(): DynamicIslandCutoutSpec {
     val density = LocalDensity.current
     val view = LocalView.current
+    val verticalOffsetPercent = rememberDynamicIslandVerticalOffsetPercent()
+    val statusBarHeight = dimensionResource(R.dimen.status_bar_height)
     val displayCutout = view.rootWindowInsets?.displayCutout ?: view.display?.cutout
     val topCutout = displayCutout?.topBoundingRectOrNull()
     val rootWidthPx =
@@ -418,10 +409,14 @@ fun rememberDynamicIslandCutoutSpec(): DynamicIslandCutoutSpec {
         }
 
     return with(density) {
+        // Percent of the status bar, so the same setting is the same fraction of the bar at
+        // every density and resolution.
+        val verticalOffsetDp = statusBarHeight * (verticalOffsetPercent / 100f)
         if (topCutout == null || rootWidthPx <= 0) {
             DynamicIslandCutoutSpec(
                 embeddedGapWidth = DynamicIslandEmbeddedGapFallbackWidth,
                 horizontalOffset = 0.dp,
+                verticalOffset = verticalOffsetDp,
             )
         } else {
             val embeddedGapWidthDp =
@@ -434,13 +429,31 @@ fun rememberDynamicIslandCutoutSpec(): DynamicIslandCutoutSpec {
             DynamicIslandCutoutSpec(
                 embeddedGapWidth = embeddedGapWidthDp,
                 horizontalOffset = horizontalOffsetDp,
+                cutoutCenterX = topCutout.exactCenterX(),
+                verticalOffset = verticalOffsetDp,
             )
         }
     }
 }
 
-private fun DisplayCutout.topBoundingRectOrNull() =
-    getBoundingRectTop().takeUnless { it.isEmpty }
+/**
+ * The top cutout's extent, from its path when there is one. Some devices' bounding rects do not
+ * match their cutout (phone2 reports 454-540 for a camera drawn at 511-569), and the island has
+ * to sit on the camera itself.
+ */
+private fun DisplayCutout.topBoundingRectOrNull(): Rect? {
+    val top = getBoundingRectTop().takeUnless { it.isEmpty } ?: return null
+    val path = cutoutPath ?: return top
+    val bounds = RectF()
+    path.computeBounds(bounds, true)
+    if (bounds.isEmpty || bounds.top > top.bottom) return top
+    return Rect(
+        bounds.left.toInt(),
+        bounds.top.toInt(),
+        ceil(bounds.right).toInt(),
+        ceil(bounds.bottom).toInt(),
+    )
+}
 
 private fun PopupContentModel.isUtilityStatusContent(): Boolean {
     return this is PopupContentModel.ScreenRecord ||
@@ -449,21 +462,12 @@ private fun PopupContentModel.isUtilityStatusContent(): Boolean {
         this is PopupContentModel.Flashlight
 }
 
-private fun compactIslandWidthFor(content: PopupContentModel): Dp? {
-    return when (content) {
-        is PopupContentModel.Media -> CompactMediaIslandWidth
-        is PopupContentModel.ScreenRecord ->
-            when (content.model) {
-                is ScreenRecordPopupModel.Starting -> CompactTimerIslandWidth
-                is ScreenRecordPopupModel.Recording -> CompactRecordingIslandWidth
-            }
-        is PopupContentModel.Stopwatch -> CompactTimerIslandWidth
-        is PopupContentModel.Alarm -> CompactAlarmIslandWidth
-        is PopupContentModel.Flashlight -> CompactUtilityIslandWidth
-        is PopupContentModel.OngoingCall -> CompactTimerIslandWidth
-        is PopupContentModel.PromotedOngoing -> CompactMediaIslandWidth
-        else -> null
-    }
+@Composable
+private fun rememberDynamicIslandWidth(): Dp {
+    val context = LocalContext.current
+    val widthDp by
+        remember { observeDynamicIslandWidth(context) }.collectAsState(initial = 110)
+    return widthDp.dp.coerceIn(MinDynamicIslandWidth, MaxDynamicIslandWidth)
 }
 
 @Composable
@@ -473,6 +477,15 @@ private fun rememberDynamicIslandHeightScale(): Float {
         remember { observeDynamicIslandScale(context, DynamicIslandFeatureSettings.HEIGHT_SCALE) }
             .collectAsState(initial = 1f)
     return heightScale
+}
+
+@Composable
+private fun rememberDynamicIslandVerticalOffsetPercent(): Int {
+    val context = LocalContext.current
+    val verticalOffsetPercent by
+        remember { observeDynamicIslandVerticalOffset(context) }
+            .collectAsState(initial = 0)
+    return verticalOffsetPercent
 }
 
 private data class DynamicIslandCollapseState(val scale: Float, val contentAlpha: Float)

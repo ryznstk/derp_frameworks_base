@@ -29,6 +29,7 @@ import android.os.SystemClock
 import android.os.UserHandle
 import androidx.compose.runtime.snapshotFlow
 import com.android.systemui.ActivityIntentHelper
+import com.android.systemui.axdynamicbar.domain.AxDynamicBarSettings
 import com.android.systemui.common.shared.model.ContentDescription
 import com.android.systemui.common.shared.model.Icon as UiIcon
 import com.android.systemui.dagger.SysUISingleton
@@ -43,11 +44,16 @@ import com.android.systemui.media.remedia.shared.flag.MediaControlsInComposeFlag
 import com.android.systemui.media.remedia.shared.model.MediaSessionState
 import com.android.systemui.plugins.ActivityStarter
 import com.android.systemui.res.R
+import com.android.systemui.statusbar.phone.StatusBarLyricFetcher
+import com.android.systemui.statusbar.quickactions.island.media.shared.model.LyricLine
+import com.android.systemui.statusbar.quickactions.island.media.shared.model.LyricWord
 import com.android.systemui.statusbar.quickactions.island.media.shared.model.MediaControlChipModel
+import com.android.systemui.statusbar.quickactions.island.shared.DynamicIslandFeatureSettings.LYRICS
 import com.android.systemui.statusbar.quickactions.island.shared.DynamicIslandFeatureSettings.MEDIA_CONTROLS
 import com.android.systemui.statusbar.quickactions.island.shared.DynamicIslandFeatureSettings.observeDynamicIslandFeatureEnabled
 import com.android.systemui.statusbar.NotificationLockscreenUserManager
 import com.android.systemui.statusbar.policy.KeyguardStateController
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -55,6 +61,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -68,6 +75,8 @@ import kotlinx.coroutines.flow.stateIn
 import android.provider.Settings
 
 private const val PLAYBACK_POSITION_POLL_INTERVAL_MS = 1000L
+private const val LYRIC_FETCH_RETRY_DELAY_MS = 15_000L
+private const val MAX_LYRIC_FETCH_RETRIES = 2
 
 /**
  * Interactor for managing the state of the media control chip in the status bar.
@@ -87,6 +96,7 @@ constructor(
     private val activityIntentHelper: ActivityIntentHelper,
     private val lockscreenUserManager: NotificationLockscreenUserManager,
     private val keyguardStateController: KeyguardStateController,
+    private val axDynamicBarSettings: AxDynamicBarSettings,
 ) {
     private val isEnabled = MutableStateFlow(false)
     private val isDynamicIslandEnabled = MutableStateFlow(false)
@@ -99,7 +109,14 @@ constructor(
         }
 
     private val mediaControlChipModelForScene: Flow<MediaControlState> = snapshotFlow {
-        mediaRepository.currentMedia.firstOrNull { it.isActive }?.toMediaControlState(
+        val currentMedia = mediaRepository.currentMedia
+        // Playback can be running before the pipeline marks the entry active. Prefer that
+        // session so the island does not wait out a cancelled notification reload.
+        val playing =
+            currentMedia.firstOrNull {
+                it.state is MediaSessionState.Playing || it.state is MediaSessionState.Buffering
+            }
+        (playing ?: currentMedia.firstOrNull { it.isActive })?.toMediaControlState(
             context = context,
             activityStarter = activityStarter,
             activityIntentHelper = activityIntentHelper,
@@ -141,27 +158,66 @@ constructor(
             .flatMapLatest { state -> state.token.playbackInfoFlow(context) }
             .distinctUntilChanged()
 
-    /** The currently active [MediaControlChipModel] */
-    val mediaControlChipModel: StateFlow<MediaControlChipModel?> =
+    private val axMediaActive: Flow<Boolean> =
         combine(
-            mediaControlState,
-            livePlaybackInfo,
-            isEnabled,
+            axDynamicBarSettings.isEnabled,
+            axDynamicBarSettings.disabledEventTypes,
+            axDynamicBarSettings.isLockscreenMediaEnabled,
+            axDynamicBarSettings.isLockscreenMediaLyricsEnabled,
+        ) { barEnabled, disabledEvents, lockscreenMedia, lockscreenLyrics ->
+            (barEnabled && "media" !in disabledEvents) || lockscreenMedia || lockscreenLyrics
+        }
+
+    private val showMediaControls: Flow<Boolean> =
+        combine(
             isDynamicIslandEnabled,
             observeDynamicIslandFeatureEnabled(context, MEDIA_CONTROLS),
-        ) {
+            axMediaActive,
+        ) { islandEnabled, mediaControlsEnabled, axMediaActive ->
+            (islandEnabled && mediaControlsEnabled) || axMediaActive
+        }
+
+    private val currentLyrics = MutableStateFlow<String?>(null)
+    private val currentSyncedLyrics = MutableStateFlow<String?>(null)
+    private val currentTimedLyrics = MutableStateFlow<List<LyricLine>>(emptyList())
+    private val islandLyricsEnabled =
+        observeDynamicIslandFeatureEnabled(context, LYRICS, defaultValue = false)
+    private var lyricsFetchJob: Job? = null
+    private val lyricsFetchGeneration = AtomicInteger(0)
+    private var lastFetchedKey: String? = null
+    private var cachedTrackIdentity: String? = null
+    private var cachedTrack: LyricTrack? = null
+
+    private val baseMediaControlChipModel: Flow<MediaControlChipModel?> =
+        combine(mediaControlState, livePlaybackInfo, isEnabled, showMediaControls) {
             mediaControlState,
             playbackInfo,
             isEnabled,
-            isDynamicIslandEnabled,
-            mediaControlsEnabled ->
-                if (isEnabled && isDynamicIslandEnabled && mediaControlsEnabled) {
+            showMediaControls ->
+                if (isEnabled && showMediaControls) {
                     mediaControlState.model?.withPlaybackInfo(playbackInfo)
                 } else {
                     null
                 }
             }
-            .stateIn(backgroundScope, SharingStarted.WhileSubscribed(), null)
+
+    /** The currently active [MediaControlChipModel] */
+    val mediaControlChipModel: StateFlow<MediaControlChipModel?> =
+        combine(
+            baseMediaControlChipModel,
+            currentLyrics,
+            currentSyncedLyrics,
+            currentTimedLyrics,
+            islandLyricsEnabled,
+        ) { baseModel, lyrics, syncedLyrics, timedLyrics, isIslandLyricsEnabled ->
+            baseModel?.copy(
+                lyrics = lyrics,
+                syncedLyrics = syncedLyrics,
+                timedLyrics = timedLyrics,
+                isDynamicIslandLyricsEnabled = isIslandLyricsEnabled,
+            )
+        }
+        .stateIn(backgroundScope, SharingStarted.WhileSubscribed(), null)
 
     /** Initializes setting observation. This must be called from a CoreStartable. */
     fun initialize() {
@@ -179,6 +235,7 @@ constructor(
         )
         updateDynamicIslandState()
         isEnabled.value = true
+        setupLyricsWorker()
     }
 
     private fun updateDynamicIslandState() {
@@ -189,6 +246,226 @@ constructor(
                 0,
                 UserHandle.USER_CURRENT
             ) != 0
+    }
+
+    private fun setupLyricsWorker() {
+        backgroundScope.launch {
+            val dynamicBarLyricsEnabled =
+                combine(
+                    axDynamicBarSettings.isEnabled,
+                    axDynamicBarSettings.disabledEventTypes,
+                    axDynamicBarSettings.isLockscreenMediaLyricsEnabled,
+                ) { isEnabled, disabledEvents, lockscreenLyricsEnabled ->
+                    val barLyricsEnabled =
+                        isEnabled && "media" !in disabledEvents && "lyrics" !in disabledEvents
+                    barLyricsEnabled || lockscreenLyricsEnabled
+                }
+            combine(
+                mediaControlState,
+                islandLyricsEnabled,
+                dynamicBarLyricsEnabled,
+                lyricSourceChanges(),
+            ) { state, islandLyrics, barLyrics, _ ->
+                state to (islandLyrics || barLyrics)
+            }
+                .collect { (state, lyricsEnabled) ->
+                    val track = if (lyricsEnabled) cachedLyricTrack(state) else null
+                    if (track == null) {
+                        clearFetchedLyrics()
+                        return@collect
+                    }
+                    val userId = lockscreenUserManager.currentUserId
+                    val sourceSetting =
+                        Settings.Secure.getStringForUser(
+                            context.contentResolver,
+                            Settings.Secure.STATUS_BAR_LYRIC_SOURCES,
+                            userId,
+                        )
+                    val wordTiming =
+                        Settings.Secure.getIntForUser(
+                            context.contentResolver,
+                            Settings.Secure.STATUS_BAR_LYRIC_WORD_TIMING,
+                            1,
+                            userId,
+                        )
+                    val key =
+                        listOf(
+                            track.packageName,
+                            track.mediaId,
+                            track.title,
+                            track.artist,
+                            track.album,
+                            track.durationMs,
+                            sourceSetting,
+                            wordTiming,
+                        ).joinToString("\u0000")
+                    if (key == lastFetchedKey) {
+                        return@collect
+                    }
+                    lyricsFetchJob?.cancel()
+                    val generation = lyricsFetchGeneration.incrementAndGet()
+                    lastFetchedKey = key
+                    currentLyrics.value = null
+                    currentSyncedLyrics.value = null
+                    currentTimedLyrics.value = emptyList()
+                    lyricsFetchJob =
+                        backgroundScope.launch {
+                            var result: StatusBarLyricFetcher.Result? = null
+                            var attempt = 0
+                            while (isActive && generation == lyricsFetchGeneration.get()) {
+                                result =
+                                    runInterruptible {
+                                        StatusBarLyricFetcher.fetch(
+                                            context,
+                                            userId,
+                                            track.packageName,
+                                            track.mediaId,
+                                            track.title,
+                                            track.artist,
+                                            track.album,
+                                            track.durationMs,
+                                        )
+                                    }
+                                if (result != null || attempt >= MAX_LYRIC_FETCH_RETRIES) {
+                                    break
+                                }
+                                attempt++
+                                delay(LYRIC_FETCH_RETRY_DELAY_MS)
+                            }
+                            if (generation != lyricsFetchGeneration.get()) {
+                                return@launch
+                            }
+                            currentLyrics.value = result?.plainLyrics
+                            currentSyncedLyrics.value = result?.syncedLyrics
+                            currentTimedLyrics.value = result?.toTimedLines().orEmpty()
+                        }
+                }
+        }
+    }
+
+    private fun clearFetchedLyrics() {
+        lyricsFetchJob?.cancel()
+        lyricsFetchJob = null
+        lyricsFetchGeneration.incrementAndGet()
+        lastFetchedKey = null
+        cachedTrackIdentity = null
+        cachedTrack = null
+        currentLyrics.value = null
+        currentSyncedLyrics.value = null
+        currentTimedLyrics.value = emptyList()
+    }
+
+    private fun StatusBarLyricFetcher.Result.toTimedLines(): List<LyricLine> {
+        return lines.map { line ->
+            LyricLine(
+                timestampMs = line.timestampMs,
+                text = line.text,
+                words =
+                    line.words.map { word ->
+                        LyricWord(
+                            beginMs = word.beginMs,
+                            endMs = word.endMs,
+                            text = word.text,
+                        )
+                    },
+            )
+        }
+    }
+
+    private fun lyricSourceChanges(): Flow<Unit> = callbackFlow {
+        val observer =
+            object : ContentObserver(Handler(Looper.getMainLooper())) {
+                override fun onChange(selfChange: Boolean) {
+                    trySend(Unit)
+                }
+            }
+        val resolver = context.contentResolver
+        resolver.registerContentObserver(
+            Settings.Secure.getUriFor(Settings.Secure.STATUS_BAR_LYRIC_SOURCES),
+            false,
+            observer,
+            UserHandle.USER_ALL,
+        )
+        resolver.registerContentObserver(
+            Settings.Secure.getUriFor(Settings.Secure.STATUS_BAR_LYRIC_WORD_TIMING),
+            false,
+            observer,
+            UserHandle.USER_ALL,
+        )
+        trySend(Unit)
+        awaitClose { resolver.unregisterContentObserver(observer) }
+    }
+
+    private fun cachedLyricTrack(state: MediaControlState): LyricTrack? {
+        val model = state.model ?: return null
+        val identity =
+            listOf(
+                model.packageName,
+                model.songName,
+                model.artistName,
+                model.durationMs,
+                state.token,
+            ).joinToString("\u0000")
+        if (identity == cachedTrackIdentity) {
+            return cachedTrack
+        }
+        val track = lyricTrackFor(state)
+        cachedTrackIdentity = identity
+        cachedTrack = track
+        return track
+    }
+
+    private fun lyricTrackFor(state: MediaControlState): LyricTrack? {
+        val model = state.model ?: return null
+        val token = state.token
+        if (token != null) {
+            val metadata =
+                try {
+                    val controller = MediaController(context, token)
+                    controller.metadata?.let { it to (controller.packageName ?: model.packageName) }
+                } catch (_: RuntimeException) {
+                    null
+                }
+            if (metadata != null) {
+                val (tags, packageName) = metadata
+                var title = tags.getString(MediaMetadata.METADATA_KEY_TITLE)
+                if (title.isNullOrEmpty()) {
+                    title = tags.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)
+                }
+                if (!title.isNullOrEmpty()) {
+                    var artist = tags.getString(MediaMetadata.METADATA_KEY_ARTIST)
+                    if (artist.isNullOrEmpty()) {
+                        artist = tags.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
+                    }
+                    val durationMs =
+                        if (tags.containsKey(MediaMetadata.METADATA_KEY_DURATION)) {
+                            tags.getLong(MediaMetadata.METADATA_KEY_DURATION)
+                        } else {
+                            model.durationMs
+                        }
+                    return LyricTrack(
+                        packageName = packageName,
+                        mediaId = tags.getString(MediaMetadata.METADATA_KEY_MEDIA_ID),
+                        title = title,
+                        artist = artist,
+                        album = tags.getString(MediaMetadata.METADATA_KEY_ALBUM),
+                        durationMs = durationMs,
+                    )
+                }
+            }
+        }
+        val title = model.songName?.toString()
+        if (title.isNullOrBlank()) {
+            return null
+        }
+        return LyricTrack(
+            packageName = model.packageName,
+            mediaId = null,
+            title = title,
+            artist = model.artistName?.toString(),
+            album = null,
+            durationMs = model.durationMs,
+        )
     }
 }
 
@@ -224,6 +501,7 @@ private fun MediaDataModel.toMediaControlState(
                 positionMs = positionMs,
                 canBeScrubbed = canBeScrubbed,
                 isPlaying = state is MediaSessionState.Playing || state is MediaSessionState.Buffering,
+                packageName = packageName,
             ),
         token = token,
     )
@@ -262,6 +540,7 @@ private fun MediaData.toMediaControlState(
                 positionMs = 0L,
                 canBeScrubbed = false,
                 isPlaying = isPlaying ?: playOrPauseLooksPlaying(),
+                packageName = packageName,
             ),
         token = token,
     )
@@ -458,6 +737,15 @@ private data class PlaybackInfo(
     val canSeek: Boolean,
     val isPlaying: Boolean,
     val playOrPause: MediaAction?,
+)
+
+private data class LyricTrack(
+    val packageName: String?,
+    val mediaId: String?,
+    val title: String,
+    val artist: String?,
+    val album: String?,
+    val durationMs: Long,
 )
 
 private data class MediaControlState(
