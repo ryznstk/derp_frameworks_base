@@ -668,7 +668,18 @@ bool BootAnimation::findBootAnimationFileInternal(const std::vector<std::string>
 
 void BootAnimation::findBootAnimationFile() {
     ATRACE_CALL();
-    const bool playDarkAnim = android::base::GetIntProperty("ro.boot.theme", 0) == 1;
+    // Pixel bootloaders pass ro.boot.theme=1 for a dark boot animation and 0
+    // for a light one. Devices without that bootloader only record the night
+    // mode as persist.sys.theme, which UiModeManagerService sets to
+    // MODE_NIGHT_YES (2). An unset ro.boot.theme must not be treated as light,
+    // or a dark-theme user would always get the light file.
+    bool playDarkAnim = false;
+    const std::string bootTheme = android::base::GetProperty("ro.boot.theme", "");
+    if (!bootTheme.empty()) {
+        playDarkAnim = bootTheme == "1";
+    } else {
+        playDarkAnim = android::base::GetIntProperty("persist.sys.theme", 0) == 2;
+    }
     const std::string productBootanimationFile = PRODUCT_BOOTANIMATION_DIR +
         android::base::GetProperty("ro.product.bootanim.file", playDarkAnim ?
         PRODUCT_BOOTANIMATION_DARK_FILE : PRODUCT_BOOTANIMATION_FILE);
@@ -1598,17 +1609,38 @@ bool BootAnimation::playAnimation(const Animation& animation) {
                 for (const auto& display : mDisplays) {
                     eglMakeCurrent(mEgl, display.eglSurface, display.eglSurface, mEglContext);
 
-                    const double ratioW =
-                            static_cast<double>(display.width) / display.initWidth;
-                    const double ratioH =
-                            static_cast<double>(display.height) / display.initHeight;
-                    const int animationX = (display.width - animation.width * ratioW) / 2;
-                    const int animationY = (display.height - animation.height * ratioH) / 2;
+                    // Fit the animation inside the initial display, then apply the
+                    // same resize ratio as before for foldables and rotation.
+                    // A uniform fit covers every panel: larger screens scale the
+                    // picture up, smaller ones scale it down instead of clipping.
+                    const double resizeW = display.initWidth > 0
+                            ? static_cast<double>(display.width) / display.initWidth
+                            : 1.0;
+                    const double resizeH = display.initHeight > 0
+                            ? static_cast<double>(display.height) / display.initHeight
+                            : 1.0;
+                    double fit = 1.0;
+                    if (animation.width > 0 && animation.height > 0 &&
+                            display.initWidth > 0 && display.initHeight > 0) {
+                        const double fitW =
+                                static_cast<double>(display.initWidth) / animation.width;
+                        const double fitH =
+                                static_cast<double>(display.initHeight) / animation.height;
+                        fit = fitW < fitH ? fitW : fitH;
+                    }
+                    const double scaleW = fit * resizeW;
+                    const double scaleH = fit * resizeH;
+                    const int scaledAnimW = lround(animation.width * scaleW);
+                    const int scaledAnimH = lround(animation.height * scaleH);
+                    const int fittedW = scaledAnimW > display.width ? display.width : scaledAnimW;
+                    const int fittedH = scaledAnimH > display.height ? display.height : scaledAnimH;
+                    const int animationX = (display.width - fittedW) / 2;
+                    const int animationY = (display.height - fittedH) / 2;
 
-                    const int trimWidth = frame.trimWidth * ratioW;
-                    const int trimHeight = frame.trimHeight * ratioH;
-                    const int trimX = frame.trimX * ratioW;
-                    const int trimY = frame.trimY * ratioH;
+                    const int trimWidth = lround(frame.trimWidth * scaleW);
+                    const int trimHeight = lround(frame.trimHeight * scaleH);
+                    const int trimX = lround(frame.trimX * scaleW);
+                    const int trimY = lround(frame.trimY * scaleH);
                     const int xc = animationX + trimX;
                     const int yc = animationY + trimY;
                     projectSceneToWindow(display);

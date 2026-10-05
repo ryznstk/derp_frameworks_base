@@ -47,7 +47,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -59,11 +58,11 @@ public class PropImitationHooks {
     private static final String TAG = "PropImitationHooks";
     private static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
 
-    private static final Boolean sDisableGmsProps = SystemProperties.getBoolean(
-            "persist.sys.pihooks.disable.gms_props", false);
+    // Settings toggle. Default on, matching the spoofing screen.
+    private static final String PROP_PI_SPOOF = "persist.sys.pihooks.pi";
+    // Shell kill switch. Default off.
+    private static final String PROP_DISABLE_GMS_PROPS = "persist.sys.pihooks.disable.gms_props";
 
-    private static final Boolean sDisableKeyAttestationBlock = SystemProperties.getBoolean(
-            "persist.sys.pihooks.disable.gms_key_attestation_block", false);
     private static final String DATA_FILE = "gms_certified_props.json";
 
     private static final String PACKAGE_ARCORE = "com.google.ar.core";
@@ -185,8 +184,13 @@ public class PropImitationHooks {
         }
     }
 
+    private static boolean isPiSpoofEnabled() {
+        return SystemProperties.getBoolean(PROP_PI_SPOOF, true)
+                && !SystemProperties.getBoolean(PROP_DISABLE_GMS_PROPS, false);
+    }
+
     private static void setPlayIntegrityProps(Context context) {
-        if (sDisableGmsProps) {
+        if (!isPiSpoofEnabled()) {
             dlog("GMS prop imitation is disabled by user");
             return;
         }
@@ -296,7 +300,7 @@ public class PropImitationHooks {
     }
 
     public static boolean shouldBypassTaskPermission(Context context) {
-        if (sDisableGmsProps) {
+        if (!isPiSpoofEnabled()) {
             return false;
         }
 
@@ -314,31 +318,6 @@ public class PropImitationHooks {
         } catch (Exception e) {
             Log.e(TAG, "shouldBypassTaskPermission: unable to get gms/finsky uid", e);
             return false;
-        }
-    }
-
-    private static boolean isCallerPlayIntegrity() {
-        return Arrays.stream(Thread.currentThread().getStackTrace())
-                .map(StackTraceElement::getClassName)
-                .anyMatch(name -> name.toLowerCase(Locale.US).contains("droidguard"));
-    }
-
-    public static void onEngineGetCertificateChain() {
-        if (sDisableKeyAttestationBlock) {
-            dlog("Key attestation blocking is disabled by user");
-            return;
-        }
-
-        // If a keybox is found, don't block key attestation
-        if (KeyProviderManager.isKeyboxAvailable()) {
-            dlog("Key attestation blocking is disabled because a keybox is defined to spoof");
-            return;
-        }
-
-        // Check stack for Play Integrity
-        if (isCallerPlayIntegrity()) {
-            dlog("Blocked key attestation for play integrity");
-            throw new UnsupportedOperationException();
         }
     }
 
