@@ -7279,6 +7279,32 @@ public final class Settings {
         public static final String VIBRATE_ON_DISCONNECT = "vibrate_on_disconnect";
 
         /**
+         * Whether to blink flashlight for incoming calls
+         * 0 = Disabled (Default)
+         * 1 = Blink flashlight only in Ringer mode
+         * 2 = Blink flashlight only when ringer is not audible
+         * 3 = Blink flashlight only when entirely silent
+         * 4 = Blink flashlight always regardless of ringer mode
+         * @hide
+         */
+        @Readable
+        public static final String FLASHLIGHT_ON_CALL = "flashlight_on_call";
+
+        /**
+         * Whether flashlight_on_call ignores DND (Zen Mode)
+         * @hide
+         */
+        @Readable
+        public static final String FLASHLIGHT_ON_CALL_IGNORE_DND = "flashlight_on_call_ignore_dnd";
+
+        /**
+         * Rate in Hz in which to blink flashlight_on_call
+         * @hide
+         */
+        @Readable
+        public static final String FLASHLIGHT_ON_CALL_RATE = "flashlight_on_call_rate";
+
+        /**
          * Whether to display cross sign for a data disabled connection
          * @hide
          */
@@ -15459,6 +15485,13 @@ public final class Settings {
         public static final String QS_DATA_USAGE_CYCLE_TYPE = "qs_data_usage_cycle_type";
 
         /**
+         * Edge grip suppression width level (1-5)
+         * @hide
+         */
+        @Readable
+        public static final String EDGE_GRIP_SUPPRESSION = "edge_grip_suppression";
+
+        /**
          * These entries are considered common between the personal and the managed profile,
          * since the managed profile doesn't get to change them.
          */
@@ -15619,11 +15652,39 @@ public final class Settings {
          *    <li> 1 = shown </li>
          * </ul>
          *
+         * When enabled, lyrics are translated on device into
+         * {@link #STATUS_BAR_LYRIC_TRANSLATION_TARGET}. A translation supplied by the lyric source
+         * is used only when the target language is Chinese and on-device translation is
+         * unavailable.
+         *
          * @hide
          */
         @Readable
         public static final String STATUS_BAR_LYRIC_SHOW_TRANSLATION =
                 "status_bar_lyric_show_translation";
+
+        /**
+         * BCP-47 language tag for on-device lyric translation. {@code system} or an empty value
+         * uses the current system locale.
+         *
+         * @hide
+         */
+        @Readable
+        public static final String STATUS_BAR_LYRIC_TRANSLATION_TARGET =
+                "status_bar_lyric_translation_target";
+
+        /**
+         * Controls whether missing on-device translation models may be downloaded off Wi-Fi.
+         * <ul>
+         *    <li> 0 = download on any network </li>
+         *    <li> 1 = download only on Wi-Fi; use a model that is already on device otherwise </li>
+         * </ul>
+         *
+         * @hide
+         */
+        @Readable
+        public static final String STATUS_BAR_LYRIC_TRANSLATION_WIFI_ONLY =
+                "status_bar_lyric_translation_wifi_only";
 
         /**
          * Controls whether word-timed lyrics are requested when available.
@@ -15655,7 +15716,8 @@ public final class Settings {
          * Semicolon-separated HTTPS base URLs for custom lyric sources. Each source must provide
          * GET /v1/lyrics?title=&artist=&album=&durationMs=&sourcePackage=&mediaId= and return
          * the standard lyric payload. GET /v2/lyrics with the same parameters is optional and may
-         * return YRC word timing. An empty value looks up line-synced lyrics from LRCLIB.
+         * return YRC word timing. An empty value prefers word-timed Apple Music lyrics and falls
+         * back to line-synced lyrics from LRCLIB.
          *
          * @hide
          */

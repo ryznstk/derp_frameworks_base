@@ -43,8 +43,30 @@ public class KeyboxImitationHooks {
     private static final String TAG = "KeyboxImitationHooks";
     private static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
 
+    /**
+     * Managers for hooked frameworks. Attesting from those processes breaks
+     * strong integrity, so they stay on the device attestation until the
+     * exclude list is changed.
+     */
+    public static final String[] DEFAULT_EXCLUDED_PACKAGES = {
+            "org.lsposed.manager",
+            "io.github.lsposed.manager",
+            "de.robv.android.xposed.installer",
+            "org.meowcat.edxposed.manager",
+            "com.solohsu.android.edxp.manager",
+            "io.va.exposed",
+            "com.topjohnwu.lsplant.manager",
+            "me.weishu.exposed",
+    };
+
     public static KeyMetadata generateKey(IKeystoreSecurityLevel level, KeyDescriptor descriptor,
             Collection<KeyParameter> args, int flags, byte[] entropy) {
+        // The boot-hash probe must read the raw TEE leaf. Re-signing it would
+        // still keep the hash, but a software fallback must not be published.
+        if (descriptor != null
+                && VerifiedBootState.TEE_BOOT_HASH_ALIAS.equals(descriptor.alias)) {
+            return null;
+        }
         if (!KeyProviderManager.isKeyboxAvailable()) {
             return null;
         }
@@ -66,7 +88,33 @@ public class KeyboxImitationHooks {
             return null;
         }
 
+        KeyParameter[] keyParameters = args.toArray(new KeyParameter[args.size()]);
+        KeyMetadata hardware = null;
         try {
+            hardware = level.generateKey(descriptor, null, keyParameters, flags, entropy);
+        } catch (Exception e) {
+            Log.i(TAG, "Hardware attestation failed, generating a keybox key", e);
+        }
+        if (hardware != null) {
+            KeyDescriptor generated = hardware.key != null ? hardware.key : descriptor;
+            if (hardware.certificate != null && hardware.certificate.length > 0) {
+                try {
+                    List<Certificate> hacked = KeyboxChainGenerator.hackHardwareLeaf(
+                            hardware.certificate);
+                    if (hacked != null && !hacked.isEmpty()) {
+                        Log.i(TAG, "Re-signed hardware attestation leaf with keybox");
+                        return updateSubcomponents(generated, hacked);
+                    }
+                    Log.i(TAG, "Left hardware attestation leaf unchanged");
+                } catch (Exception e) {
+                    Log.w(TAG, "Hardware leaf hack failed", e);
+                }
+            }
+            return hardware;
+        }
+
+        try {
+            Log.i(TAG, "Generating a software keybox key");
             GeneratedKeyMaterial keyMaterial = KeyboxChainGenerator.generateKeyMaterial(uid,
                     descriptor, params, entropy);
             if (keyMaterial == null || keyMaterial.certificateChain == null

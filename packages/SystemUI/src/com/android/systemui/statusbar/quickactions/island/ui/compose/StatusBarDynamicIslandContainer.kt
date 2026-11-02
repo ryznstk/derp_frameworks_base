@@ -59,8 +59,11 @@ fun StatusBarDynamicIslandContainer(
     islandActions: IslandActions,
     onIslandBoundsChanged: (android.graphics.Rect) -> Unit = {},
     modifier: Modifier = Modifier,
+    sideEdge: DynamicIslandCutoutEdge? = null,
 ) {
-    val cutoutSpec = rememberDynamicIslandCutoutSpec()
+    val topCutoutSpec = rememberDynamicIslandCutoutSpec()
+    val sideCutoutSpec = rememberDynamicIslandSideCutoutSpec(sideEdge)
+    val cutoutSpec = if (sideEdge != null) sideCutoutSpec else topCutoutSpec
     var naturalCenterX by remember { mutableFloatStateOf(Float.NaN) }
     var selectedChipId by remember { mutableStateOf<PopupChipId?>(null) }
     var popupAnchorChip by remember { mutableStateOf<PopupChipModel.Shown?>(null) }
@@ -118,11 +121,11 @@ fun StatusBarDynamicIslandContainer(
         }
     }
 
-    val cutoutCenterX = cutoutSpec.cutoutCenterX
+    val cutoutCenterX = if (sideEdge == null) cutoutSpec.cutoutCenterX else null
     Box(
         modifier =
             modifier
-                .padding(horizontal = 8.dp)
+                .padding(horizontal = if (sideEdge != null) 0.dp else 8.dp)
                 .then(
                     if (cutoutCenterX != null) {
                         // The status bar's centred area has uneven side paddings, so its centre is
@@ -154,7 +157,10 @@ fun StatusBarDynamicIslandContainer(
                             )
                         )
                     }
-                },
+                }
+                // Docked to a side camera: turn the whole pill with its edge. The reported bounds
+                // above are of the turned pill.
+                .rotatedLayout(sideEdge?.quarterTurns ?: 0),
         contentAlignment = Alignment.Center,
     ) {
         if (selectedChip == null) return@Box
@@ -191,36 +197,38 @@ fun StatusBarDynamicIslandContainer(
             var horizontalDragPx by remember(chipId, chips.size) { mutableFloatStateOf(0f) }
             val thresholdPx = with(LocalDensity.current) { 36.dp.toPx() }
 
-            StatusBarDynamicIslandChip(
-                viewModel = chip,
-                pageCount = chips.size,
-                cutoutSpec = cutoutSpec,
-                modifier =
-                    Modifier.onGloballyPositioned { coordinates ->
-                            chipBoundsInScreen = coordinates.boundsInScreen(islandView)
-                        }
-                        .pointerInput(chips.size, chip.chipId) {
-                            detectHorizontalDragGestures(
-                                onDragEnd = {
-                                    when {
-                                        horizontalDragPx <= -thresholdPx -> selectRelative(1)
-                                        horizontalDragPx >= thresholdPx -> selectRelative(-1)
-                                    }
-                                    horizontalDragPx = 0f
-                                },
-                                onDragCancel = { horizontalDragPx = 0f },
-                                onHorizontalDrag = { change, dragAmount ->
-                                    horizontalDragPx += dragAmount
-                                    if (chips.size > 1 && abs(horizontalDragPx) > 8f) {
-                                        change.consume()
-                                    }
-                                },
-                            )
-                        },
-                onTap = {
-                    if (chip.isPopupShown) chip.hidePopup() else chip.showPopup()
-                },
-            )
+            ProvideDynamicIslandPillTurns(sideEdge?.quarterTurns ?: 0) {
+                StatusBarDynamicIslandChip(
+                    viewModel = chip,
+                    pageCount = chips.size,
+                    cutoutSpec = cutoutSpec,
+                    modifier =
+                        Modifier.onGloballyPositioned { coordinates ->
+                                chipBoundsInScreen = coordinates.boundsInScreen(islandView)
+                            }
+                            .pointerInput(chips.size, chip.chipId) {
+                                detectHorizontalDragGestures(
+                                    onDragEnd = {
+                                        when {
+                                            horizontalDragPx <= -thresholdPx -> selectRelative(1)
+                                            horizontalDragPx >= thresholdPx -> selectRelative(-1)
+                                        }
+                                        horizontalDragPx = 0f
+                                    },
+                                    onDragCancel = { horizontalDragPx = 0f },
+                                    onHorizontalDrag = { change, dragAmount ->
+                                        horizontalDragPx += dragAmount
+                                        if (chips.size > 1 && abs(horizontalDragPx) > 8f) {
+                                            change.consume()
+                                        }
+                                    },
+                                )
+                            },
+                    onTap = {
+                        if (chip.isPopupShown) chip.hidePopup() else chip.showPopup()
+                    },
+                )
+            }
         }
 
         popupAnchorChip?.let { anchoredChip ->
@@ -229,6 +237,7 @@ fun StatusBarDynamicIslandContainer(
                 isVisible = popupVisible,
                 islandActions = islandActions,
                 chipBoundsInScreen = chipBoundsInScreen,
+                sideEdge = sideEdge,
             )
         }
     }

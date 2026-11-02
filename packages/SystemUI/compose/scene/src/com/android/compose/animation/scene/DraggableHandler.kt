@@ -334,6 +334,8 @@ private class DragControllerImpl(
         val distance = animation.distance()
         val previousOffset = animation.gestureContext.dragOffset
         val desiredOffset = previousOffset + delta
+        val projectedDistance =
+            animation.contentTransition.transformationSpec.distance as? ThresholdSwipeDistance
 
         // Note: the distance could be negative if fromContent is above or to the left of toContent.
         val newOffset =
@@ -344,6 +346,7 @@ private class DragControllerImpl(
                     delta
                 }
 
+                projectedDistance?.velocityProjectionMillis != null -> desiredOffset
                 distance > 0f -> desiredOffset.fastCoerceIn(0f, distance)
                 else -> desiredOffset.fastCoerceIn(distance, 0f)
             }
@@ -377,10 +380,19 @@ private class DragControllerImpl(
 
         val effectiveDragOffset = swipeAnimation.effectiveDragOffset
         val distance = swipeAnimation.distance()
+        val thresholdDistance =
+            swipeAnimation.contentTransition.transformationSpec.distance as? ThresholdSwipeDistance
 
         val shouldCommitSwipe =
             when {
                 distance == DistanceUnspecified -> false
+                thresholdDistance != null && !swipeAnimation.requiresFullDistanceSwipe ->
+                    thresholdDistance.shouldCommit(
+                        density = draggableHandler.layoutImpl.density,
+                        offset = effectiveDragOffset,
+                        distance = distance,
+                        velocity = velocity,
+                    )
                 UserActionGestureFlag.isEnabled ->
                     shouldCommitSwipeWithUserActionGesture(
                         effectiveDragOffset = effectiveDragOffset,
@@ -404,7 +416,12 @@ private class DragControllerImpl(
         val targeContent =
             if (shouldCommitSwipe) swipeAnimation.toContent else swipeAnimation.fromContent
 
-        return swipeAnimation.animateOffset(velocity, targeContent, awaitFling = awaitFling)
+        return swipeAnimation.animateOffset(
+            velocity,
+            targeContent,
+            spec = thresholdDistance?.settleSpec,
+            awaitFling = awaitFling,
+        )
     }
 
     /**

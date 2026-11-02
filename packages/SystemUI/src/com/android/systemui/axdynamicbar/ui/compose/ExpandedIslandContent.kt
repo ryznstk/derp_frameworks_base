@@ -9,7 +9,6 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -345,14 +344,19 @@ internal fun CallExpanded(event: IslandEvent.Call, interactor: IslandActions) {
                     val isAnswer = action.label.toString().lowercase().let {
                         it.contains("answer") || it.contains("accept")
                     }
+                    val scheme = MaterialTheme.colorScheme
                     ExpressivePillButton(
                         label = action.label.toString(),
-                        contentColor = if (isDestructive) RedAccent
-                            else if (isAnswer) GreenAccent
-                            else accent,
-                        backgroundColor = if (isDestructive) RedAccent.copy(alpha = AlphaFaint)
-                            else if (isAnswer) GreenAccent.copy(alpha = AlphaFaint)
-                            else accent.copy(alpha = AlphaFaint),
+                        contentColor = when {
+                            isDestructive -> scheme.onErrorContainer
+                            isAnswer -> scheme.onTertiaryContainer
+                            else -> scheme.onPrimaryContainer
+                        },
+                        backgroundColor = when {
+                            isDestructive -> scheme.errorContainer
+                            isAnswer -> scheme.tertiaryContainer
+                            else -> scheme.primaryContainer
+                        },
                         modifier = Modifier.weight(1f),
                         onClick = {
                             try { action.action.actionIntent?.sendWithBal(context) }
@@ -389,9 +393,7 @@ internal fun PrimaryCard(content: @Composable () -> Unit) {
     Box(
         modifier =
             Modifier.fillMaxWidth()
-                .clip(ShapeCard)
-                .background(CardBg)
-                .border(1.dp, CardBorderBrush, ShapeCard)
+                .surfaceBlur(ShapeCard, CardCorner)
                 .padding(SpaceXxl)
     ) {
         content()

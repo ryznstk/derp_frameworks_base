@@ -32,6 +32,7 @@ import com.android.systemui.lifecycle.HydratedActivatable
 import com.android.systemui.res.R
 import com.android.systemui.statusbar.phone.StatusBarIconTintHelper
 import com.android.systemui.statusbar.pipeline.battery.data.repository.BatteryRepository
+import com.android.systemui.statusbar.pipeline.battery.domain.interactor.BatteryAttributionModel
 import com.android.systemui.statusbar.pipeline.battery.domain.interactor.BatteryAttributionModel.Charging
 import com.android.systemui.statusbar.pipeline.battery.domain.interactor.BatteryAttributionModel.Defend
 import com.android.systemui.statusbar.pipeline.battery.domain.interactor.BatteryAttributionModel.PowerSave
@@ -102,67 +103,47 @@ sealed class BatteryViewModel(
 
     val attribution: BatteryGlyph? by attributionGlyph.hydratedStateOf(initialValue = null)
 
+    /**
+     * Charging, power-save, critical, and default colors, without status-bar accent or custom tint.
+     * Quick Settings uses this so a low battery stays red when accent tint is disabled there.
+     */
+    private val _stateColorProfile: Flow<ColorProfile> =
+        combine(interactor.batteryAttributionType, interactor.isCritical) { attr, isCritical ->
+            colorProfileForState(attr, isCritical)
+        }
+
+    val stateColorProfile: ColorProfile by
+        _stateColorProfile.hydratedStateOf(initialValue = DEFAULT_COLOR_PROFILE)
+
     private val _colorProfile: Flow<ColorProfile> =
         combine(
-            interactor.batteryAttributionType,
-            interactor.isCritical,
+            _stateColorProfile,
             interactor.statusBarIconTintMode,
             interactor.statusBarIconTintCustomColorArgb,
             interactor.themeChanged,
-        ) { attr, isCritical, tintMode, customArgb, _ ->
-            val baseProfile = when (attr) {
-                Charging,
-                Defend ->
-                    ColorProfile(
-                        dark = BatteryColors.DarkTheme.Charging,
-                        light = BatteryColors.LightTheme.Charging,
-                    )
-
-                PowerSave ->
-                    ColorProfile(
-                        dark = BatteryColors.DarkTheme.PowerSave,
-                        light = BatteryColors.LightTheme.PowerSave,
-                    )
-
-                else ->
-                    if (isCritical) {
-                        ColorProfile(
-                            dark = BatteryColors.DarkTheme.Error,
-                            light = BatteryColors.LightTheme.Error,
-                        )
-                    } else {
-                        ColorProfile(
-                            dark = BatteryColors.DarkTheme.Default,
-                            light = BatteryColors.LightTheme.Default,
-                        )
-                    }
-            }
-
+        ) { baseProfile, tintMode, customArgb, _ ->
             when (tintMode) {
                 StatusBarIconTintHelper.MODE_ACCENT -> {
                     val accentColorInt = Utils.getColorAccentDefaultColor(context)
                     val (accentLight, accentDark) =
                         BatteryColors.createAccentThemes(context, accentColorInt)
-                    ColorProfile(dark = accentDark, light = accentLight)
+                    tintedProfile(baseProfile, accentLight, accentDark)
                 }
                 StatusBarIconTintHelper.MODE_CUSTOM -> {
                     val (accentLight, accentDark) =
                         BatteryColors.createAccentThemes(context, customArgb)
-                    ColorProfile(dark = accentDark, light = accentLight)
+                    tintedProfile(baseProfile, accentLight, accentDark)
                 }
                 else -> baseProfile
             }
         }
 
-    /** For the current battery state, what is the relevant color profile to use */
+    /**
+     * State colors, with accent or custom tint when that status-bar setting is on.
+     * Charging, power-save, and critical fills stay the untinted state colors.
+     */
     val colorProfile: ColorProfile by
-        _colorProfile.hydratedStateOf(
-            initialValue =
-                ColorProfile(
-                    dark = BatteryColors.DarkTheme.Default,
-                    light = BatteryColors.LightTheme.Default,
-                )
-        )
+        _colorProfile.hydratedStateOf(initialValue = DEFAULT_COLOR_PROFILE)
 
     val contentDescription: ContentDescription by
         combine(interactor.batteryAttributionType, interactor.level) { attr, level ->
@@ -363,6 +344,59 @@ sealed class BatteryViewModel(
 
         /** Resource id used to identify battery composable view in SysUI tests */
         const val TEST_TAG = "battery"
+
+        private val DEFAULT_COLOR_PROFILE =
+            ColorProfile(
+                dark = BatteryColors.DarkTheme.Default,
+                light = BatteryColors.LightTheme.Default,
+            )
+
+        /**
+         * Accent and custom tint recolor the frame. Charging, power-save, and critical fills stay
+         * the same colors the untinted battery uses.
+         */
+        private fun tintedProfile(
+            baseProfile: ColorProfile,
+            tintedLight: BatteryColors.LightTheme,
+            tintedDark: BatteryColors.DarkTheme,
+        ): ColorProfile {
+            if (baseProfile.dark is BatteryColors.DarkTheme.Default) {
+                return ColorProfile(dark = tintedDark, light = tintedLight)
+            }
+            return ColorProfile(
+                dark = BatteryColors.TintedDarkFill(tintedDark, baseProfile.dark.fill),
+                light = BatteryColors.TintedLightFill(tintedLight, baseProfile.light.fill),
+            )
+        }
+
+        private fun colorProfileForState(
+            attr: BatteryAttributionModel?,
+            isCritical: Boolean,
+        ): ColorProfile =
+            when (attr) {
+                Charging,
+                Defend ->
+                    ColorProfile(
+                        dark = BatteryColors.DarkTheme.Charging,
+                        light = BatteryColors.LightTheme.Charging,
+                    )
+
+                PowerSave ->
+                    ColorProfile(
+                        dark = BatteryColors.DarkTheme.PowerSave,
+                        light = BatteryColors.LightTheme.PowerSave,
+                    )
+
+                else ->
+                    if (isCritical) {
+                        ColorProfile(
+                            dark = BatteryColors.DarkTheme.Error,
+                            light = BatteryColors.LightTheme.Error,
+                        )
+                    } else {
+                        DEFAULT_COLOR_PROFILE
+                    }
+            }
 
         fun Int.glyphRepresentation(): List<BatteryGlyph> = toString().map { it.toGlyph() }
 

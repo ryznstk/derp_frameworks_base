@@ -265,9 +265,12 @@ private fun KeyguardPanelSurface(content: @Composable () -> Unit) {
             .widthIn(max = ExpandedMaxWidth)
             .fillMaxWidth()
             .padding(horizontal = SpaceSection)
-            .clip(ShapeXl)
-            .background(CardBg)
-            .border(1.dp, CardBorderBrush, ShapeXl)
+            .surfaceBlur(ShapeXl, KeyguardCardCorner)
+            .border(
+                1.dp,
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                ShapeXl,
+            )
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -287,7 +290,10 @@ private fun TonalBanner(
         modifier = Modifier
             .fillMaxWidth()
             .clip(ShapeLg)
-            .background(colors.tonal)
+            .background(
+                if (rememberSurfaceBlurActive()) colors.accent.copy(alpha = AlphaIconBg)
+                else colors.tonal
+            )
             .padding(horizontal = SpaceXxl, vertical = SpaceLg),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(SpaceMd),
@@ -749,9 +755,9 @@ private fun KeyguardTimerPanel(event: IslandEvent.Timer, interactor: IslandActio
                 eventStyleFor(event).icon?.let { Icon(it, null, tint = colors.accent, modifier = Modifier.size(18.dp)) }
             }
             Text(
-                event.label.ifEmpty { stringResource(R.string.ax_dynamic_bar_timer) }.uppercase(),
+                event.label.ifEmpty { stringResource(R.string.ax_dynamic_bar_timer) },
                 color = colors.accent,
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelLargeEmphasized,
             )
         }
 
@@ -768,7 +774,7 @@ private fun KeyguardTimerPanel(event: IslandEvent.Timer, interactor: IslandActio
             Text(
                 if (event.isPaused) stringResource(R.string.ax_dynamic_bar_paused) else formatCountdownLong(remainingMs),
                 color = OnCardText,
-                style = MaterialTheme.typography.displayMedium,
+                style = MaterialTheme.typography.displayMediumEmphasized,
             )
         }
 
@@ -836,9 +842,9 @@ private fun KeyguardStopwatchPanel(event: IslandEvent.Stopwatch, interactor: Isl
                 Icon(Icons.Filled.AvTimer, null, tint = colors.accent, modifier = Modifier.size(18.dp))
             }
             Text(
-                event.label.ifEmpty { stringResource(R.string.ax_dynamic_bar_stopwatch) }.uppercase(),
+                event.label.ifEmpty { stringResource(R.string.ax_dynamic_bar_stopwatch) },
                 color = colors.accent,
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelLargeEmphasized,
             )
         }
 
@@ -851,7 +857,7 @@ private fun KeyguardStopwatchPanel(event: IslandEvent.Stopwatch, interactor: Isl
             Text(
                 if (event.isRunning) formatStopwatch(elapsedMs) else stringResource(R.string.ax_dynamic_bar_paused),
                 color = OnCardText,
-                style = MaterialTheme.typography.displayMedium,
+                style = MaterialTheme.typography.displayMediumEmphasized,
             )
         }
 
@@ -918,16 +924,16 @@ private fun KeyguardAudioRecordingPanel(event: IslandEvent.AudioRecording, inter
                     RecordingState.RECORDING -> stringResource(R.string.ax_dynamic_bar_recording)
                     RecordingState.PAUSED -> stringResource(R.string.ax_dynamic_bar_paused)
                     RecordingState.SAVED -> stringResource(R.string.ax_dynamic_bar_saved)
-                }.uppercase(),
+                },
                 color = colors.accent,
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelLargeEmphasized,
             )
         }
 
         Text(
             formatElapsedTime(elapsedMs),
             color = OnCardText,
-            style = MaterialTheme.typography.displayLarge,
+            style = MaterialTheme.typography.displayLargeEmphasized,
         )
 
         if (isRecording) {

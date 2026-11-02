@@ -31,12 +31,11 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.dimensionResource
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.unit.LayoutDirection
 import com.android.compose.animation.scene.ContentScope
 import com.android.compose.animation.scene.ElementKey
 import com.android.compose.animation.scene.UserAction
@@ -57,9 +56,14 @@ import com.android.systemui.scene.session.ui.composable.SaveableSession
 import com.android.systemui.scene.shared.model.Overlays
 import com.android.systemui.scene.ui.composable.Overlay
 import com.android.systemui.shade.ui.composable.ChipHighlightModel
+import com.android.systemui.shade.ui.composable.DualShadeNotificationRows
 import com.android.systemui.shade.ui.composable.OverlayShade
 import com.android.systemui.shade.ui.composable.OverlayShadeHeader
-import com.android.systemui.shade.ui.composable.switchShadeOnHorizontalSwipe
+import com.android.systemui.shade.ui.composable.dualShadeControlGesture
+import com.android.systemui.shade.ui.composable.dualShadePart
+import com.android.systemui.shade.ui.composable.rememberDualShadeScrollState
+import com.android.systemui.shade.ui.composable.shadePanelSwipe
+import com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout
 import com.android.systemui.statusbar.notification.stack.ui.view.NotificationScrollView
 import dagger.Lazy
 import javax.inject.Inject
@@ -118,6 +122,12 @@ constructor(
             onDispose { viewModel.onShadeOverlayBoundsChanged(null) }
         }
 
+        val scrollState =
+            rememberDualShadeScrollState(
+                shadeSession,
+                com.android.systemui.Prefs.Key.DUAL_SHADE_NOTIFICATIONS_SCROLL,
+            )
+
         val targetBlurRadiusPx: Float by
             remember(layoutState) {
                 derivedStateOf { viewModel.calculateTargetBlurRadius(layoutState.transitionState) }
@@ -126,11 +136,13 @@ constructor(
             animateFloatAsState(targetValue = targetBlurRadiusPx, label = "NSOverlay-blurRadius")
 
         OverlayShade(
+            slidingContentElement = OverlayShade.Elements.NotificationsSlidingContent,
             panelElement = NotificationsShade.Elements.Panel,
             alignmentOnWideScreens = viewModel.alignmentOnWideScreens,
             statusBarHeightPx = viewModel.statusBarHeightPx,
             enableTransparency = viewModel.isTransparencyEnabled,
             modifier = modifier.blur(with(LocalDensity.current) { animatedBlurRadiusPx.toDp() }),
+            panelTopSpacing = 8.dp,
             onScrimClicked = viewModel::onScrimClicked,
             onBackgroundPlaced = { bounds, _, _ -> viewModel.onShadeOverlayBoundsChanged(bounds) },
             header = {
@@ -145,21 +157,15 @@ constructor(
                         quickSettingsHighlight = headerViewModel.inactiveChipHighlight,
                         showClock = true,
                         modifier =
-                            Modifier.element(NotificationsShade.Elements.StatusBar).then(
-                                if (viewModel.isDualShade) {
-                                    Modifier.switchShadeOnHorizontalSwipe(
-                                        swipeLeft =
-                                            LocalLayoutDirection.current == LayoutDirection.Ltr,
-                                        onSwipe = headerViewModel::onSystemIconChipClicked,
-                                    )
-                                } else {
-                                    Modifier
-                                }
-                            ),
+                            Modifier.element(NotificationsShade.Elements.StatusBar)
+                                .shadePanelSwipe(enabled = viewModel.isDualShade),
                     )
                 }
             },
         ) {
+            DualShadeNotificationRows(
+                stackScrollView.get().asView() as? NotificationStackScrollLayout
+            )
             val focusRequester = remember { FocusRequester() }
 
             LaunchedEffectWithLifecycle(focusRequester) {
@@ -183,6 +189,7 @@ constructor(
                     shadeSession = shadeSession,
                     stackScrollView = stackScrollView,
                     viewModel = placeholderViewModel,
+                    contentScrollState = scrollState,
                     notificationRulesParentViewModel = notificationRulesParentViewModel,
                     jankMonitor = jankMonitor,
                     shouldPunchHoleBehindScrim = false,
@@ -199,8 +206,12 @@ constructor(
                                     viewModelFactory = viewModel.mediaViewModelFactory,
                                     presentationStyle = MediaPresentationStyle.Default,
                                     behavior = viewModel.mediaUiBehavior,
+                                    modifier =
+                                        Modifier.dualShadePart(rank = 0f, key = "media")
+                                            .dualShadeControlGesture(),
                                     onDismissed = viewModel::onMediaSwipeToDismiss,
                                     location = Media.Location.SHADE,
+                                    headerGestureModifier = { Modifier.dualShadeControlGesture() },
                                 )
                             }
                         }

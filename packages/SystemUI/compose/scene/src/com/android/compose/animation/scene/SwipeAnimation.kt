@@ -58,13 +58,15 @@ internal fun createSwipeAnimation(
     distance: Float = DistanceUnspecified,
 ): SwipeAnimation<*> {
     var lastDistance = distance
+    val distanceIsFixed = distance != DistanceUnspecified
     var gestureSpec =
         // For predictive-back, the distance is hard-coded to 1; Use the Identity gesture spec
         // initially, since the lastDistance initialization below is be skipped in this case.
         if (distance == DistanceUnspecified) MotionSpec.InitiallyUndefined else MotionSpec.Identity
 
     fun distance(animation: SwipeAnimation<*>): Float {
-        if (lastDistance != DistanceUnspecified) {
+        val refreshDuringDrag = !distanceIsFixed && animation.isUserInputOngoing
+        if (!refreshDuringDrag && lastDistance != DistanceUnspecified) {
             return lastDistance
         }
 
@@ -79,24 +81,36 @@ internal fun createSwipeAnimation(
             }
 
         if (absoluteDistance <= 0f) {
-            return DistanceUnspecified
+            return if (lastDistance != DistanceUnspecified) lastDistance else DistanceUnspecified
         }
 
+        if (
+            lastDistance != DistanceUnspecified &&
+                (absoluteDistance - lastDistance.absoluteValue).absoluteValue <= 1f
+        ) {
+            return lastDistance
+        }
+
+        val firstSample = lastDistance == DistanceUnspecified
         // Compute the signed distance and make sure that the offset is always coerced in the right
         // range.
-        val distance =
+        val signedDistance =
             if (isUpOrLeft) {
-                gestureContext.dragOffset =
-                    gestureContext.dragOffset.fastCoerceIn(-absoluteDistance, 0f)
+                val coerced = gestureContext.dragOffset.fastCoerceIn(-absoluteDistance, 0f)
+                if (coerced != gestureContext.dragOffset) {
+                    gestureContext.dragOffset = coerced
+                }
                 -absoluteDistance
             } else {
-                gestureContext.dragOffset =
-                    gestureContext.dragOffset.fastCoerceIn(0f, absoluteDistance)
+                val coerced = gestureContext.dragOffset.fastCoerceIn(0f, absoluteDistance)
+                if (coerced != gestureContext.dragOffset) {
+                    gestureContext.dragOffset = coerced
+                }
                 absoluteDistance
             }
-        lastDistance = distance
+        lastDistance = signedDistance
 
-        if (UserActionGestureFlag.isEnabled) {
+        if (firstSample && UserActionGestureFlag.isEnabled) {
             gestureSpec =
                 (userActionDistance as? UserActionGesture)?.run {
                     layoutImpl.userActionGestureScope.gestureSpec(
@@ -108,7 +122,7 @@ internal fun createSwipeAnimation(
                 } ?: MotionSpec.Identity
         }
 
-        return distance
+        return signedDistance
     }
 
     return createSwipeAnimation(
@@ -265,19 +279,18 @@ internal class SwipeAnimation<T : ContentKey>(
      * This might be different from `gestureContext.dragOffset` if a gesture effect is applied.
      */
     val effectiveDragOffset: Float
-        get() =
-            gestureTransformation?.let {
-                // Important: Reading the `distance()` is not side-effect free, it actually polls
-                //  whether the layout can determine the distance.
-                //  For now, wiring up the calls to `UserActionDistance.gestureSpec()` is performed
-                //  when distance first returns a real value. To ensure `effectiveDragOffset` will
-                //  use the gestureSpec as soon as its available, this distance() call ensures its
-                //  setup before the output value is computed.
-                distance()
+        get() {
+            val offset =
+                gestureTransformation?.let {
+                    // Resolve distance first; it initializes the gesture's motion spec.
+                    distance()
 
-                // Transform back from the normalized gesture input space
-                toActualDragOffset(it.output)
-            } ?: gestureContext.dragOffset
+                    // Transform back from the normalized gesture input space
+                    toActualDragOffset(it.output)
+                } ?: gestureContext.dragOffset
+            val policy = contentTransition.transformationSpec.distance as? ThresholdSwipeDistance
+            return policy?.resistedOffset(offset, distance()) ?: offset
+        }
 
     /** The [TransitionState.Transition] whose implementation delegates to this [SwipeAnimation]. */
     lateinit var contentTransition: TransitionState.Transition
@@ -446,11 +459,12 @@ internal class SwipeAnimation<T : ContentKey>(
             Animatable(initialOffset, OffsetVisibilityThreshold).also {
                 offsetAnimation = it
 
-                // We should animate when the progress value is between [0, 1].
-                if (distance > 0) {
-                    it.updateBounds(0f, distance)
-                } else {
-                    it.updateBounds(distance, 0f)
+                val policy =
+                    contentTransition.transformationSpec.distance as? ThresholdSwipeDistance
+                // Projected panel gestures retain the approved curve's overshoot.
+                if (policy?.velocityProjectionMillis == null) {
+                    if (distance > 0) it.updateBounds(0f, distance)
+                    else it.updateBounds(distance, 0f)
                 }
             }
 
@@ -458,15 +472,24 @@ internal class SwipeAnimation<T : ContentKey>(
 
         val velocityConsumed = CompletableDeferred<Float>()
         offsetAnimationRunnable.complete {
+            val policy = contentTransition.transformationSpec.distance as? ThresholdSwipeDistance
             val animationResult =
-                animatable.animateToScrollOffsetTarget(
-                    targetOffset,
-                    initialVelocity,
-                    decayAnimationSpec,
-                    spec
-                        ?: (if (layoutState.motionScheme == StandardMotionScheme) contentTransition.transformationSpec.progressSpec else null)
-                        ?: layoutState.motionScheme.slowSpatialSpec(),
-                )
+                if (policy?.velocityProjectionMillis != null) {
+                    animatable.animateTo(
+                        targetValue = targetOffset,
+                        animationSpec = spec ?: policy.settleSpec,
+                        initialVelocity = initialVelocity,
+                    )
+                } else
+                    animatable.animateToScrollOffsetTarget(
+                        targetOffset,
+                        initialVelocity,
+                        decayAnimationSpec,
+                        spec
+                            ?: (if (layoutState.motionScheme == StandardMotionScheme)
+                                contentTransition.transformationSpec.progressSpec
+                            else null) ?: layoutState.motionScheme.slowSpatialSpec(),
+                    )
 
             val consumed = initialVelocity - animationResult.endState.velocity
             velocityConsumed.complete(consumed)

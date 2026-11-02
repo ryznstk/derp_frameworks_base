@@ -50,6 +50,7 @@ import androidx.compose.ui.layout.Placeable
 import androidx.compose.ui.layout.layoutId
 import androidx.compose.ui.layout.onLayoutRectChanged
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
@@ -68,7 +69,6 @@ import com.android.systemui.statusbar.pipeline.battery.shared.ui.BatteryFrame
 import com.android.systemui.statusbar.pipeline.battery.shared.ui.BatteryGlyph
 import com.android.systemui.statusbar.pipeline.battery.shared.ui.PathSpec
 import com.android.systemui.statusbar.pipeline.battery.ui.viewmodel.BatteryViewModel
-import com.android.systemui.statusbar.pipeline.battery.ui.viewmodel.ColorProfile
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 
@@ -183,13 +183,8 @@ fun UnifiedBattery(
 ) {
     var bounds by remember { mutableStateOf(Rect()) }
 
-    val defaultColorProfile =
-        ColorProfile(
-            dark = BatteryColors.DarkTheme.Default,
-            light = BatteryColors.LightTheme.Default,
-        )
     val effectiveColorProfile =
-        if (useAccentTintInContext) viewModel.colorProfile else defaultColorProfile
+        if (useAccentTintInContext) viewModel.colorProfile else viewModel.stateColorProfile
 
     val colorProvider = {
         val base =
@@ -198,7 +193,12 @@ fun UnifiedBattery(
             } else {
                 effectiveColorProfile.light
             }
-        if (iconTint != null) BatteryColors.MatchedIconTint(base, iconTint) else base
+        val tint = iconTint
+        if (tint != null && !base.hasStateFill()) {
+            BatteryColors.MatchedIconTint(base, tint)
+        } else {
+            base
+        }
     }
 
     BatteryLayout(
@@ -762,6 +762,22 @@ fun BatteryCap(
     }
 }
 
+/**
+ * Attribution glyph drawn beside the percentage when the battery style is text-only.
+ * Hidden from accessibility so it is not announced separately from the percentage.
+ */
+@Composable
+fun TextModeAttributionGlyph(
+    attr: BatteryGlyph,
+    color: () -> Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier.clearAndSetSemantics {}) {
+        val s = attr.scaleTo(size.width, size.height)
+        scale(s, pivot = Offset.Zero) { drawPath(attr.path, color()) }
+    }
+}
+
 @Composable
 fun BatteryAttribution(
     attr: BatteryGlyph,
@@ -784,6 +800,15 @@ fun BatteryAttribution(
         }
     }
 }
+
+/**
+ * Charging, power-save, and critical fills stay visible when a chip asks to match icon tint.
+ * Matched by fill color so an accent-tinted frame with a state fill is included.
+ */
+private fun BatteryColors.hasStateFill(): Boolean =
+    fill == BatteryColors.DarkTheme.Charging.fill ||
+        fill == BatteryColors.DarkTheme.PowerSave.fill ||
+        fill == BatteryColors.DarkTheme.Error.fill
 
 /** Determines the correct color for the battery frame (body and cap) based on its state. */
 private fun getBatteryFrameColor(

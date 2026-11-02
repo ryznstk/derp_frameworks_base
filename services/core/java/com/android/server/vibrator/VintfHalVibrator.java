@@ -36,6 +36,7 @@ import android.os.IBinder;
 import android.os.IVibratorStateListener;
 import android.os.RemoteCallbackList;
 import android.os.RemoteException;
+import android.os.RichTapVibrationEffect;
 import android.os.ServiceManager;
 import android.os.Trace;
 import android.os.VibrationEffect;
@@ -56,6 +57,9 @@ import java.util.function.Consumer;
 /** Implementations for {@link HalVibrator} backed by VINTF objects. */
 class VintfHalVibrator {
     private static final String TAG = "VintfHalVibrator";
+    // RichTap perform returns a command id, so use a short positive duration for framework state.
+    private static final int RICHTAP_PREBAKED_DURATION_MS = 30;
+    private static final int RICHTAP_PREBAKED_HE_AMPLITUDE = 0xff;
 
     /** {@link VintfSupplier} for {@link IVibrator} service managed by {@link IVibratorManager}. */
     static final class ManagedVibratorSupplier extends VintfSupplier<IVibrator> {
@@ -133,6 +137,9 @@ class VintfHalVibrator {
         private volatile State mCurrentState;
         private volatile float mCurrentAmplitude;
 
+        @Nullable
+        private RichTapVibratorService mRichTapService;
+
         DefaultHalVibrator(int vibratorId, VintfSupplier<IVibrator> supplier, Handler handler,
                 HalNativeHandler nativeHandler) {
             mVibratorId = vibratorId;
@@ -142,6 +149,10 @@ class VintfHalVibrator {
             mVibratorInfo = new VibratorInfo.Builder(vibratorId).build();
             mCurrentState = State.IDLE;
             mCurrentAmplitude = 0;
+
+            if (RichTapVibrationEffect.isSupported()) {
+                mRichTapService = new RichTapVibratorService();
+            }
         }
 
         @Override
@@ -286,6 +297,10 @@ class VintfHalVibrator {
             Trace.traceBegin(TRACE_TAG_VIBRATOR, "HalVibrator.setAmplitude");
             try {
                 synchronized (mLock) {
+                    if (mRichTapService != null) {
+                        int strength = (int) (255.0f * amplitude);
+                        mRichTapService.richTapVibratorSetAmplitude(strength);
+                    }
                     if (!mVibratorInfo.hasCapability(IVibrator.CAP_AMPLITUDE_CONTROL)) {
                         return false;
                     }
@@ -308,7 +323,14 @@ class VintfHalVibrator {
             try {
                 synchronized (mLock) {
                     int result;
-                    if (mVibratorInfo.hasCapability(IVibrator.CAP_ON_CALLBACK)) {
+                    if (mRichTapService != null
+                            && mRichTapService.richTapVibratorOn(milliseconds)) {
+                        result = (int) milliseconds;
+                        // RichTap does not signal the standard HAL callback. Without this, the
+                        // vibration thread waits CALLBACKS_EXTRA_TIMEOUT before releasing.
+                        mHandler.postDelayed(newVibrationCallback(vibrationId, stepId),
+                                milliseconds);
+                    } else if (mVibratorInfo.hasCapability(IVibrator.CAP_ON_CALLBACK)) {
                         // Delegate vibrate with callback to native, to avoid creating a new
                         // callback instance for each call, overloading the GC.
                         result = mNativeHandler.vibrateWithCallback(mVibratorId, vibrationId,
@@ -368,13 +390,43 @@ class VintfHalVibrator {
             Trace.traceBegin(TRACE_TAG_VIBRATOR, "HalVibrator.onPrebaked");
             try {
                 synchronized (mLock) {
-                    int result;
-                    if (mVibratorInfo.hasCapability(IVibrator.CAP_PERFORM_CALLBACK)) {
+                    int result = 0;
+                    boolean richtapPlayed = false;
+                    boolean useRichTap = mRichTapService != null
+                            && RichTapVibrationEffect.isInnerEffectSupported(
+                                    prebaked.getEffectId());
+                    int[] pattern = useRichTap ? RichTapVibrationEffect.getPrebakedHeEffect(
+                            prebaked.getEffectId(), prebaked.getEffectStrength()) : null;
+                    if (pattern != null && mRichTapService.richTapVibratorOnRawPattern(pattern,
+                            RICHTAP_PREBAKED_HE_AMPLITUDE, 0)) {
+                        result = RICHTAP_PREBAKED_DURATION_MS;
+                        richtapPlayed = true;
+                    }
+                    if (result <= 0) {
+                        int strength = useRichTap
+                                ? RichTapVibrationEffect.getInnerEffectStrength(
+                                        prebaked.getEffectStrength())
+                                : 0;
+                        if (strength > 0) {
+                            int richTapEffectId = RichTapVibrationEffect.getInnerEffectId(
+                                    prebaked.getEffectId());
+                            int played = mRichTapService.richTapVibratorPerform(richTapEffectId,
+                                    (byte) strength);
+                            if (played > 0) {
+                                result = played;
+                                richtapPlayed = true;
+                            }
+                        }
+                    }
+                    if (richtapPlayed) {
+                        mHandler.postDelayed(newVibrationCallback(vibrationId, stepId), result);
+                    } else if (result <= 0 && mVibratorInfo.hasCapability(
+                            IVibrator.CAP_PERFORM_CALLBACK)) {
                         // Delegate vibrate with callback to native, to avoid creating a new
                         // callback instance for each call, overloading the GC.
                         result = mNativeHandler.vibrateWithCallback(mVibratorId, vibrationId,
                                 stepId, prebaked.getEffectId(), prebaked.getEffectStrength());
-                    } else {
+                    } else if (result <= 0) {
                         // Vibrate callback not supported, avoid unnecessary JNI round trip and
                         // simulate HAL callback here using a Handler.
                         int effectId = prebaked.getEffectId();

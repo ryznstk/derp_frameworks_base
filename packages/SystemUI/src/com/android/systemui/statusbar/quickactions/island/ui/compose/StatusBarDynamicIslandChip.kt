@@ -183,19 +183,21 @@ fun StatusBarDynamicIslandChip(
                 index == 0 &&
                     (viewModel.popupContent is PopupContentModel.Media ||
                         viewModel.popupContent is PopupContentModel.LiveScore)
-            Icon(
-                icon = chipIcon.icon,
-                modifier =
-                    Modifier.size(if (isArtworkLike) 18.dp else 16.dp)
-                        .then(
-                            if (isArtworkLike) {
-                                Modifier.clip(RoundedCornerShape(5.dp))
-                            } else {
-                                Modifier
-                            }
-                        ),
-                tint = if (isArtworkLike) Color.Unspecified else chipContentColor,
-            )
+            UprightContent {
+                Icon(
+                    icon = chipIcon.icon,
+                    modifier =
+                        Modifier.size(if (isArtworkLike) 18.dp else 16.dp)
+                            .then(
+                                if (isArtworkLike) {
+                                    Modifier.clip(RoundedCornerShape(5.dp))
+                                } else {
+                                    Modifier
+                                }
+                            ),
+                    tint = if (isArtworkLike) Color.Unspecified else chipContentColor,
+                )
+            }
         }
 
         viewModel.chipText
@@ -206,25 +208,29 @@ fun StatusBarDynamicIslandChip(
                     it.isNotBlank()
             }
             ?.let { text ->
-                Text(
-                    text = text,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = chipContentColor,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.widthIn(max = maxTextWidth),
-                )
+                UprightContent {
+                    Text(
+                        text = text,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = chipContentColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = maxTextWidth),
+                    )
+                }
             }
 
         when (val popupContent = viewModel.popupContent) {
             is PopupContentModel.Media ->
                 if (popupContent.model.isPlaying) {
-                    AudioReactiveBars(
-                        isPlaying = true,
-                        color = chipContentColor,
-                    )
+                    UprightContent {
+                        AudioReactiveBars(
+                            isPlaying = true,
+                            color = chipContentColor,
+                        )
+                    }
                 } else if (pageCount > 1) {
-                    SwipeHint(color = chipContentColor.copy(alpha = 0.72f))
+                    UprightContent { SwipeHint(color = chipContentColor.copy(alpha = 0.72f)) }
                 }
             is PopupContentModel.ScreenRecord ->
                 when (val model = popupContent.model) {
@@ -253,7 +259,7 @@ fun StatusBarDynamicIslandChip(
                 )
             else -> {
                 if (pageCount > 1) {
-                    SwipeHint(color = chipContentColor.copy(alpha = 0.72f))
+                    UprightContent { SwipeHint(color = chipContentColor.copy(alpha = 0.72f)) }
                 }
             }
         }
@@ -308,32 +314,36 @@ private fun UtilityStatusIslandChip(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Spacer(modifier = Modifier.width(10.dp))
-        Icon(
-            icon = viewModel.icons.first().icon,
-            modifier = Modifier.size(16.dp),
-            tint = chipContentColor,
-        )
-        Spacer(modifier = Modifier.width(cutoutSpec.embeddedGapWidth))
-        Box(
-            modifier =
-                Modifier.weight(1f)
-                    .padding(
-                        start = 6.dp,
-                        top = 7.dp * heightScale,
-                        bottom = 7.dp * heightScale,
-                        end = 6.dp,
-                    ),
-            contentAlignment = Alignment.CenterEnd,
-        ) {
-            Text(
-                text = utilityText,
-                style = MaterialTheme.typography.labelLarge,
-                color = chipContentColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.End,
-                modifier = Modifier.fillMaxWidth(),
+        UprightContent {
+            Icon(
+                icon = viewModel.icons.first().icon,
+                modifier = Modifier.size(16.dp),
+                tint = chipContentColor,
             )
+        }
+        Spacer(modifier = Modifier.width(cutoutSpec.embeddedGapWidth))
+        UprightContent(modifier = Modifier.weight(1f)) {
+            Box(
+                modifier =
+                    Modifier.fillMaxWidth()
+                        .padding(
+                            start = 6.dp,
+                            top = 7.dp * heightScale,
+                            bottom = 7.dp * heightScale,
+                            end = 6.dp,
+                        ),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Text(
+                    text = utilityText,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = chipContentColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
         Spacer(modifier = Modifier.width(10.dp))
     }
@@ -345,18 +355,20 @@ private fun StatusContent(
     color: Color,
     showSwipeHint: Boolean,
 ) {
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelLarge,
-            color = color,
-            maxLines = 1,
-        )
-        if (showSwipeHint) {
-            SwipeHint(color = color.copy(alpha = 0.72f))
+    UprightContent {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelLarge,
+                color = color,
+                maxLines = 1,
+            )
+            if (showSwipeHint) {
+                SwipeHint(color = color.copy(alpha = 0.72f))
+            }
         }
     }
 }
@@ -437,10 +449,62 @@ fun rememberDynamicIslandCutoutSpec(): DynamicIslandCutoutSpec {
 }
 
 /**
+ * Spec for an island docked to a camera on a side edge. The pill is laid out in its own rotated
+ * frame, where its main axis runs along the edge, so the camera gap is the hole's height. A null
+ * [edge] is unused; callers always invoke this so the composition stays stable when docking.
+ */
+@Composable
+fun rememberDynamicIslandSideCutoutSpec(
+    edge: DynamicIslandCutoutEdge?
+): DynamicIslandCutoutSpec {
+    val density = LocalDensity.current
+    return remember(edge, density) {
+        if (edge == null) {
+            DynamicIslandCutoutSpec(
+                embeddedGapWidth = DynamicIslandEmbeddedGapFallbackWidth,
+                horizontalOffset = 0.dp,
+                verticalOffset = 0.dp,
+            )
+        } else {
+            with(density) {
+                val embeddedGapWidthDp =
+                    (edge.hole.height().toDp() + (DynamicIslandEmbeddedGapSidePadding * 2))
+                        .coerceIn(
+                            DynamicIslandEmbeddedGapMinWidth,
+                            DynamicIslandEmbeddedGapMaxWidth,
+                        )
+                DynamicIslandCutoutSpec(
+                    embeddedGapWidth = embeddedGapWidthDp,
+                    horizontalOffset = 0.dp,
+                    verticalOffset = 0.dp,
+                )
+            }
+        }
+    }
+}
+
+/**
  * The top cutout's extent, from its path when there is one. Some devices' bounding rects do not
  * match their cutout (phone2 reports 454-540 for a camera drawn at 511-569), and the island has
  * to sit on the camera itself.
  */
+internal fun DisplayCutout.dynamicIslandHoleRect(): Rect? = topBoundingRectOrNull()
+
+/**
+ * The camera hole inside [boundingRect], a bounding rect of this cutout on a side edge. The top
+ * edge keeps [dynamicIslandHoleRect], whose path bounds are not clipped to the reported rect,
+ * because some devices' top rect does not contain the camera.
+ */
+fun DisplayCutout.dynamicIslandHoleWithin(boundingRect: Rect): Rect {
+    val path = cutoutPath ?: return Rect(boundingRect)
+    val pathBounds = RectF()
+    path.computeBounds(pathBounds, true)
+    if (pathBounds.isEmpty) return Rect(boundingRect)
+    val hole = Rect()
+    pathBounds.roundOut(hole)
+    return if (Rect.intersects(hole, boundingRect)) hole else Rect(boundingRect)
+}
+
 private fun DisplayCutout.topBoundingRectOrNull(): Rect? {
     val top = getBoundingRectTop().takeUnless { it.isEmpty } ?: return null
     val path = cutoutPath ?: return top

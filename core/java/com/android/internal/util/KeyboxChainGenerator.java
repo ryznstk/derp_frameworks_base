@@ -27,11 +27,13 @@ import androidx.annotation.Nullable;
 
 import com.android.internal.org.bouncycastle.asn1.ASN1Boolean;
 import com.android.internal.org.bouncycastle.asn1.ASN1Encodable;
+import com.android.internal.org.bouncycastle.asn1.ASN1EncodableVector;
 import com.android.internal.org.bouncycastle.asn1.ASN1Enumerated;
 import com.android.internal.org.bouncycastle.asn1.ASN1Integer;
 import com.android.internal.org.bouncycastle.asn1.ASN1ObjectIdentifier;
 import com.android.internal.org.bouncycastle.asn1.ASN1OctetString;
 import com.android.internal.org.bouncycastle.asn1.ASN1Sequence;
+import com.android.internal.org.bouncycastle.asn1.ASN1TaggedObject;
 import com.android.internal.org.bouncycastle.asn1.DERNull;
 import com.android.internal.org.bouncycastle.asn1.DEROctetString;
 import com.android.internal.org.bouncycastle.asn1.DERSequence;
@@ -39,6 +41,7 @@ import com.android.internal.org.bouncycastle.asn1.DERSet;
 import com.android.internal.org.bouncycastle.asn1.DERTaggedObject;
 import com.android.internal.org.bouncycastle.asn1.x500.X500Name;
 import com.android.internal.org.bouncycastle.asn1.x509.Extension;
+import com.android.internal.org.bouncycastle.asn1.x509.Extensions;
 import com.android.internal.org.bouncycastle.asn1.x509.KeyUsage;
 import com.android.internal.org.bouncycastle.asn1.x509.SubjectPublicKeyInfo;
 import com.android.internal.org.bouncycastle.asn1.x509.Time;
@@ -66,8 +69,11 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 
 import javax.security.auth.x500.X500Principal;
 
@@ -78,6 +84,8 @@ public final class KeyboxChainGenerator {
 
     private static final String TAG = "KeyboxChainGenerator";
     private static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
+    private static final ASN1ObjectIdentifier ATTESTATION_OID =
+            new ASN1ObjectIdentifier("1.3.6.1.4.1.11129.2.1.17");
 
     private static final int ATTESTATION_APPLICATION_ID_PACKAGE_INFOS_INDEX = 0;
     private static final int ATTESTATION_APPLICATION_ID_SIGNATURE_DIGESTS_INDEX = 1;
@@ -144,12 +152,11 @@ public final class KeyboxChainGenerator {
 
     private static List<Certificate> buildCertificateChain(int uid, KeyDescriptor descriptor,
             KeyGenParameters params, PublicKey publicKey) throws Exception {
+        // An EC attestation key can sign an RSA subject. Prefer the requested
+        // algorithm, and fall back so an EC-only keybox still roots RSA keys.
+        String issuerAlgorithm = issuerAlgorithm(params);
         X509v3CertificateBuilder certBuilder = new X509v3CertificateBuilder(
-                KeyboxUtils.getCertificateHolder(
-                        Objects.equals(params.algorithm, Algorithm.EC)
-                                ? KeyProperties.KEY_ALGORITHM_EC
-                                : KeyProperties.KEY_ALGORITHM_RSA
-                ).getSubject(),
+                KeyboxUtils.getCertificateHolder(issuerAlgorithm).getSubject(),
                 params.certificateSerial,
                 new Time(params.certificateNotBefore),
                 new Time(params.certificateNotAfter),
@@ -157,23 +164,231 @@ public final class KeyboxChainGenerator {
                 SubjectPublicKeyInfo.getInstance(ASN1Sequence.getInstance(publicKey.getEncoded()))
         );
 
-        KeyUsage keyUsage = new KeyUsage(KeyUsage.keyCertSign);
-        certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
+        int usageBits = keyUsageFromPurposes(params.purpose);
+        if (usageBits != 0) {
+            certBuilder.addExtension(Extension.keyUsage, true, new KeyUsage(usageBits));
+        }
         certBuilder.addExtension(createExtension(params, uid));
 
-        ContentSigner contentSigner;
-        if (Objects.equals(params.algorithm, Algorithm.EC)) {
-            contentSigner = new JcaContentSignerBuilder("SHA256withECDSA").build(
-                    KeyboxUtils.getPrivateKey(KeyProperties.KEY_ALGORITHM_EC));
-        } else {
-            contentSigner = new JcaContentSignerBuilder("SHA256withRSA").build(
-                    KeyboxUtils.getPrivateKey(KeyProperties.KEY_ALGORITHM_RSA));
-        }
+        String signatureAlgorithm = KeyProperties.KEY_ALGORITHM_EC.equals(issuerAlgorithm)
+                ? "SHA256withECDSA" : "SHA256withRSA";
+        ContentSigner contentSigner = new JcaContentSignerBuilder(signatureAlgorithm).build(
+                KeyboxUtils.getPrivateKey(issuerAlgorithm));
         X509CertificateHolder certHolder = certBuilder.build(contentSigner);
         Certificate leaf = KeyboxUtils.getCertificateFromHolder(certHolder);
-        List<Certificate> chain = KeyboxUtils.getCertificateChain(leaf.getPublicKey().getAlgorithm());
+        List<Certificate> chain = KeyboxUtils.getCertificateChain(issuerAlgorithm);
         chain.add(0, leaf);
         return chain;
+    }
+
+    private static String issuerAlgorithm(KeyGenParameters params) throws Exception {
+        String requested = Objects.equals(params.algorithm, Algorithm.EC)
+                ? KeyProperties.KEY_ALGORITHM_EC
+                : KeyProperties.KEY_ALGORITHM_RSA;
+        if (hasKeyboxCertificate(requested)) {
+            return requested;
+        }
+        String fallback = KeyProperties.KEY_ALGORITHM_EC.equals(requested)
+                ? KeyProperties.KEY_ALGORITHM_RSA
+                : KeyProperties.KEY_ALGORITHM_EC;
+        if (hasKeyboxCertificate(fallback)) {
+            Log.i(TAG, "Keybox has no " + requested + " key; signing with " + fallback);
+            return fallback;
+        }
+        return requested;
+    }
+
+    private static boolean hasKeyboxCertificate(String algorithm) {
+        try {
+            List<Certificate> chain = KeyboxUtils.getCertificateChain(algorithm);
+            return chain != null && !chain.isEmpty();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Boot hash from a raw TEE leaf, or null when the leaf has none. */
+    public static byte[] hardwareBootHash(byte[] leafCertificateBytes) {
+        if (leafCertificateBytes == null || leafCertificateBytes.length == 0) {
+            return null;
+        }
+        try {
+            X509Certificate leaf = (X509Certificate) CertificateFactory.getInstance("X.509")
+                    .generateCertificate(new ByteArrayInputStream(leafCertificateBytes));
+            X509CertificateHolder leafHolder = new X509CertificateHolder(leaf.getEncoded());
+            Extensions extensions = leafHolder.getExtensions();
+            Extension attestation = extensions == null
+                    ? null : extensions.getExtension(ATTESTATION_OID);
+            if (attestation == null) {
+                return null;
+            }
+            ASN1Encodable[] description = ASN1Sequence.getInstance(
+                    attestation.getExtnValue().getOctets()).toArray();
+            if (description.length < 8 || !(description[7] instanceof ASN1Sequence)) {
+                return null;
+            }
+            for (ASN1Encodable element : (ASN1Sequence) description[7]) {
+                ASN1TaggedObject tagged = ASN1TaggedObject.getInstance(element);
+                if (tagged.getTagNo() == 704) {
+                    return rootOfTrustOctet(tagged.getBaseObject().toASN1Primitive(), 3);
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to read hardware boot hash", e);
+        }
+        return null;
+    }
+
+    /**
+     * Re-sign a TEE attestation leaf with the keybox key. The private key stays
+     * in KeyMint. Subject, serial, dates, public key, and attestation IDs are
+     * kept. Root of trust is forced locked and verified, using the boot key and
+     * hash the TEE measured. OS version and patch tags are rewritten from the
+     * calling process so they match the patch that process reports.
+     *
+     * @return the re-signed leaf followed by the keybox chain, or null to leave
+     *         the hardware certificate unchanged
+     */
+    public static List<Certificate> hackHardwareLeaf(byte[] leafCertificateBytes) {
+        if (leafCertificateBytes == null || leafCertificateBytes.length == 0) {
+            return null;
+        }
+        try {
+            X509Certificate leaf = (X509Certificate) CertificateFactory.getInstance("X.509")
+                    .generateCertificate(new ByteArrayInputStream(leafCertificateBytes));
+            X509CertificateHolder leafHolder = new X509CertificateHolder(leaf.getEncoded());
+            Extensions extensions = leafHolder.getExtensions();
+            Extension attestation = extensions == null
+                    ? null : extensions.getExtension(ATTESTATION_OID);
+            if (attestation == null) {
+                Log.w(TAG, "Hardware leaf has no attestation extension");
+                return null;
+            }
+
+            ASN1Encodable[] description = ASN1Sequence.getInstance(
+                    attestation.getExtnValue().getOctets()).toArray();
+            if (description.length < 8 || !(description[7] instanceof ASN1Sequence)) {
+                Log.w(TAG, "Hardware attestation extension is truncated");
+                return null;
+            }
+
+            TreeMap<Integer, ASN1Encodable> enforced = new TreeMap<>();
+            ASN1Encodable originalRootOfTrust = null;
+            for (ASN1Encodable element : (ASN1Sequence) description[7]) {
+                ASN1TaggedObject tagged = ASN1TaggedObject.getInstance(element);
+                int tag = tagged.getTagNo();
+                if (tag == 704) {
+                    originalRootOfTrust = tagged.getBaseObject().toASN1Primitive();
+                } else if (tag == 705 || tag == 706 || tag == 718 || tag == 719) {
+                    // Replaced below from this process's security patch.
+                } else {
+                    enforced.put(tag, tagged);
+                }
+            }
+
+            byte[] bootKey = rootOfTrustOctet(originalRootOfTrust, 0);
+            byte[] bootHash = rootOfTrustOctet(originalRootOfTrust, 3);
+            if (bootKey == null || bootHash == null) {
+                Log.w(TAG, "Hardware leaf has no verified-boot hash");
+                return null;
+            }
+
+            String issuerAlgorithm = keyboxAlgorithm(leaf.getPublicKey());
+            if (issuerAlgorithm == null || !hasKeyboxCertificate(issuerAlgorithm)) {
+                Log.w(TAG, "No keybox for hardware leaf algorithm");
+                return null;
+            }
+
+            ASN1Encodable[] rootOfTrust = {
+                    new DEROctetString(bootKey),
+                    ASN1Boolean.TRUE,
+                    new ASN1Enumerated(0),
+                    new DEROctetString(bootHash)};
+            enforced.put(704, new DERTaggedObject(704, new DERSequence(rootOfTrust)));
+            enforced.put(705, new DERTaggedObject(true, 705, new ASN1Integer(getOsVersion())));
+            enforced.put(706, new DERTaggedObject(true, 706, new ASN1Integer(getPatchLevel())));
+            enforced.put(718, new DERTaggedObject(true, 718,
+                    new ASN1Integer(getPatchLevelLong())));
+            enforced.put(719, new DERTaggedObject(true, 719,
+                    new ASN1Integer(getPatchLevelLong())));
+
+            ASN1EncodableVector ordered = new ASN1EncodableVector();
+            for (ASN1Encodable value : enforced.values()) {
+                ordered.add(value);
+            }
+            description[7] = new DERSequence(ordered);
+            Extension hacked = new Extension(ATTESTATION_OID, attestation.isCritical(),
+                    new DEROctetString(new DERSequence(description)));
+
+            X509CertificateHolder issuer = KeyboxUtils.getCertificateHolder(issuerAlgorithm);
+            X509v3CertificateBuilder builder = new X509v3CertificateBuilder(
+                    issuer.getSubject(),
+                    leafHolder.getSerialNumber(),
+                    leafHolder.getNotBefore(),
+                    leafHolder.getNotAfter(),
+                    leafHolder.getSubject(),
+                    leafHolder.getSubjectPublicKeyInfo());
+            for (Object oid : extensions.getExtensionOIDs()) {
+                ASN1ObjectIdentifier identifier = (ASN1ObjectIdentifier) oid;
+                if (ATTESTATION_OID.equals(identifier)) {
+                    builder.addExtension(hacked);
+                } else {
+                    builder.addExtension(extensions.getExtension(identifier));
+                }
+            }
+
+            ContentSigner signer = new JcaContentSignerBuilder(
+                    signatureAlgorithm(leaf.getSigAlgName(), issuerAlgorithm)).build(
+                    KeyboxUtils.getPrivateKey(issuerAlgorithm));
+            Certificate hackedLeaf = KeyboxUtils.getCertificateFromHolder(builder.build(signer));
+            List<Certificate> chain = KeyboxUtils.getCertificateChain(issuerAlgorithm);
+            chain.add(0, hackedLeaf);
+            return chain;
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to re-sign hardware attestation leaf", e);
+            return null;
+        }
+    }
+
+    private static byte[] rootOfTrustOctet(ASN1Encodable rootOfTrust, int index) {
+        try {
+            ASN1Sequence sequence = ASN1Sequence.getInstance(rootOfTrust);
+            if (sequence == null || sequence.size() <= index) {
+                return null;
+            }
+            byte[] value = ASN1OctetString.getInstance(sequence.getObjectAt(index)).getOctets();
+            return value.length == 0 ? null : value;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String keyboxAlgorithm(PublicKey key) {
+        String algorithm = key == null ? null : key.getAlgorithm();
+        if (algorithm == null) {
+            return null;
+        }
+        if ("EC".equalsIgnoreCase(algorithm) || "ECDSA".equalsIgnoreCase(algorithm)) {
+            return KeyProperties.KEY_ALGORITHM_EC;
+        }
+        if ("RSA".equalsIgnoreCase(algorithm)) {
+            return KeyProperties.KEY_ALGORITHM_RSA;
+        }
+        return null;
+    }
+
+    private static String signatureAlgorithm(String leafSignature, String issuerAlgorithm) {
+        boolean ec = KeyProperties.KEY_ALGORITHM_EC.equals(issuerAlgorithm);
+        if (leafSignature != null) {
+            String upper = leafSignature.toUpperCase(Locale.US);
+            if (ec && upper.contains("ECDSA")) {
+                return leafSignature;
+            }
+            if (!ec && upper.contains("RSA")) {
+                return leafSignature;
+            }
+        }
+        return ec ? "SHA256withECDSA" : "SHA256withRSA";
     }
 
     private static ASN1Encodable[] fromIntList(List<Integer> list) {
@@ -187,98 +402,132 @@ public final class KeyboxChainGenerator {
     private static Extension createExtension(KeyGenParameters params, int uid) {
         try {
             ASN1Encodable[] rootOfTrustEncodables = {
-                    new DEROctetString(VerifiedBootState.getVerifiedBootKeyBytes()),
+                    new DEROctetString(VerifiedBootState.getAttestationBootKeyBytes()),
                     ASN1Boolean.TRUE,
                     new ASN1Enumerated(0),
-                    new DEROctetString(VerifiedBootState.getVerifiedBootHashBytes())};
-
+                    new DEROctetString(VerifiedBootState.getAttestationBootHashBytes())};
             ASN1Sequence rootOfTrustSeq = new DERSequence(rootOfTrustEncodables);
 
-            var Apurpose = new DERSet(fromIntList(params.purpose));
-            var Aalgorithm = new ASN1Integer(params.algorithm);
-            var AkeySize = new ASN1Integer(params.keySize);
-            var Adigest = new DERSet(fromIntList(params.digest));
-            var AecCurve = new ASN1Integer(params.ecCurve);
-            var AnoAuthRequired = DERNull.INSTANCE;
-
-            // To be loaded
-            var AosVersion = new ASN1Integer(getOsVersion());
-            var AosPatchLevel = new ASN1Integer(getPatchLevel());
-
-            var AapplicationID = createApplicationId(uid);
-            var AbootPatchlevel = new ASN1Integer(getPatchLevelLong());
-            var AvendorPatchLevel = new ASN1Integer(getPatchLevelLong());
-
-            var AcreationDateTime = new ASN1Integer(System.currentTimeMillis());
-            var Aorigin = new ASN1Integer(0);
-
-            var purpose = new DERTaggedObject(true, 1, Apurpose);
-            var algorithm = new DERTaggedObject(true, 2, Aalgorithm);
-            var keySize = new DERTaggedObject(true, 3, AkeySize);
-            var digest = new DERTaggedObject(true, 5, Adigest);
-            var ecCurve = new DERTaggedObject(true, 10, AecCurve);
-            var noAuthRequired = new DERTaggedObject(true, 503, AnoAuthRequired);
-            var creationDateTime = new DERTaggedObject(true, 701, AcreationDateTime);
-            var origin = new DERTaggedObject(true, 702, Aorigin);
-            var rootOfTrust = new DERTaggedObject(true, 704, rootOfTrustSeq);
-            var osVersion = new DERTaggedObject(true, 705, AosVersion);
-            var osPatchLevel = new DERTaggedObject(true, 706, AosPatchLevel);
-            var applicationID = new DERTaggedObject(true, 709, AapplicationID);
-            var vendorPatchLevel = new DERTaggedObject(true, 718, AvendorPatchLevel);
-            var bootPatchLevel = new DERTaggedObject(true, 719, AbootPatchlevel);
-
-            ASN1Encodable[] teeEnforcedEncodables;
-
-            // Support device properties attestation
+            // Authorization list entries must be emitted in ascending tag order.
+            TreeMap<Integer, ASN1Encodable> tee = new TreeMap<>();
+            if (!params.purpose.isEmpty()) {
+                tee.put(1, new DERSet(fromIntList(params.purpose)));
+            }
+            tee.put(2, new ASN1Integer(params.algorithm));
+            tee.put(3, new ASN1Integer(params.keySize));
+            if (!params.digest.isEmpty()) {
+                tee.put(5, new DERSet(fromIntList(params.digest)));
+            }
+            if (!params.padding.isEmpty()) {
+                tee.put(6, new DERSet(fromIntList(params.padding)));
+            }
+            if (params.algorithm == Algorithm.EC) {
+                tee.put(10, new ASN1Integer(params.ecCurve));
+            } else if (params.algorithm == Algorithm.RSA) {
+                BigInteger exponent = params.rsaPublicExponent != null
+                        ? params.rsaPublicExponent : RSAKeyGenParameterSpec.F4;
+                tee.put(200, new ASN1Integer(exponent));
+                if (!params.rsaOaepMgfDigest.isEmpty()) {
+                    tee.put(203, new DERSet(fromIntList(params.rsaOaepMgfDigest)));
+                }
+            }
+            tee.put(503, DERNull.INSTANCE);
+            tee.put(702, new ASN1Integer(0));
+            tee.put(704, rootOfTrustSeq);
+            tee.put(705, new ASN1Integer(getOsVersion()));
+            tee.put(706, new ASN1Integer(getPatchLevel()));
             if (params.brand != null) {
-                var Abrand = new DEROctetString(params.brand);
-                var Adevice = new DEROctetString(params.device);
-                var Aproduct = new DEROctetString(params.product);
-                var Amanufacturer = new DEROctetString(params.manufacturer);
-                var Amodel = new DEROctetString(params.model);
-                var brand = new DERTaggedObject(true, 710, Abrand);
-                var device = new DERTaggedObject(true, 711, Adevice);
-                var product = new DERTaggedObject(true, 712, Aproduct);
-                var manufacturer = new DERTaggedObject(true, 716, Amanufacturer);
-                var model = new DERTaggedObject(true, 717, Amodel);
+                tee.put(710, new DEROctetString(params.brand));
+            }
+            if (params.device != null) {
+                tee.put(711, new DEROctetString(params.device));
+            }
+            if (params.product != null) {
+                tee.put(712, new DEROctetString(params.product));
+            }
+            if (params.manufacturer != null) {
+                tee.put(716, new DEROctetString(params.manufacturer));
+            }
+            if (params.model != null) {
+                tee.put(717, new DEROctetString(params.model));
+            }
+            tee.put(718, new ASN1Integer(getPatchLevelLong()));
+            tee.put(719, new ASN1Integer(getPatchLevelLong()));
 
-                teeEnforcedEncodables = new ASN1Encodable[]{purpose, algorithm, keySize, digest, ecCurve,
-                        noAuthRequired, origin, rootOfTrust, osVersion, osPatchLevel, vendorPatchLevel,
-                        bootPatchLevel, brand, device, product, manufacturer, model};
-            } else {
-                teeEnforcedEncodables = new ASN1Encodable[]{purpose, algorithm, keySize, digest, ecCurve,
-                        noAuthRequired, origin, rootOfTrust, osVersion, osPatchLevel, vendorPatchLevel,
-                        bootPatchLevel};
+            TreeMap<Integer, ASN1Encodable> software = new TreeMap<>();
+            software.put(701, new ASN1Integer(System.currentTimeMillis()));
+            try {
+                software.put(709, createApplicationId(uid));
+            } catch (Throwable t) {
+                Log.w(TAG, "Failed to create application ID", t);
             }
 
-            ASN1Encodable[] softwareEnforced = {applicationID, creationDateTime};
-
-            ASN1OctetString keyDescriptionOctetStr = getAsn1OctetString(teeEnforcedEncodables, softwareEnforced, params);
-
-            return new Extension(new ASN1ObjectIdentifier("1.3.6.1.4.1.11129.2.1.17"), false, keyDescriptionOctetStr);
+            ASN1OctetString keyDescriptionOctetStr = getAsn1OctetString(
+                    toAuthorizationList(tee), toAuthorizationList(software), params);
+            return new Extension(ATTESTATION_OID, false, keyDescriptionOctetStr);
         } catch (Throwable t) {
             Log.e(TAG, Log.getStackTraceString(t));
         }
         return null;
     }
 
-    private static int getOsVersion() {
-        String release = Build.VERSION.RELEASE;
-        int major = 16, minor = 0, patch = 0;
-
-        // Handle cases with additional suffixes like "/BP31"
-        release = release.split("/")[0];
-
-        String[] parts = release.split("\\.");
-        try {
-            if (parts.length > 0) major = Integer.parseInt(parts[0]);
-            if (parts.length > 1) minor = Integer.parseInt(parts[1]);
-            if (parts.length > 2) patch = Integer.parseInt(parts[2]);
-        } catch (NumberFormatException e) {
-            Log.w(TAG, "Unable to parse OS version: " + release);
+    /**
+     * Same purpose to KeyUsage mapping stock KeyMint uses. keyCertSign is only
+     * correct for ATTEST_KEY; using it for every key is a fingerprint.
+     */
+    private static int keyUsageFromPurposes(List<Integer> purposes) {
+        int bits = 0;
+        if (purposes == null) {
+            return bits;
         }
+        for (int purpose : purposes) {
+            switch (purpose) {
+                case 2: bits |= KeyUsage.digitalSignature; break;  // SIGN
+                case 1: bits |= KeyUsage.dataEncipherment; break;  // DECRYPT
+                case 5: bits |= KeyUsage.keyEncipherment; break;   // WRAP_KEY
+                case 6: bits |= KeyUsage.keyAgreement; break;      // AGREE_KEY
+                case 7: bits |= KeyUsage.keyCertSign; break;       // ATTEST_KEY
+                default: break;
+            }
+        }
+        return bits;
+    }
 
-        return major * 10000 + minor * 100 + patch;
+    private static DERSequence toAuthorizationList(TreeMap<Integer, ASN1Encodable> fields) {
+        ASN1EncodableVector vector = new ASN1EncodableVector();
+        for (Map.Entry<Integer, ASN1Encodable> entry : fields.entrySet()) {
+            vector.add(new DERTaggedObject(true, entry.getKey(), entry.getValue()));
+        }
+        return new DERSequence(vector);
+    }
+
+    private static int getOsVersion() {
+        return switch (Build.VERSION.SDK_INT) {
+            case Build.VERSION_CODES.Q -> 100000;
+            case Build.VERSION_CODES.R -> 110000;
+            case Build.VERSION_CODES.S -> 120000;
+            case Build.VERSION_CODES.S_V2 -> 120100;
+            case Build.VERSION_CODES.TIRAMISU -> 130000;
+            case Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> 140000;
+            case Build.VERSION_CODES.VANILLA_ICE_CREAM -> 150000;
+            default -> (Build.VERSION.SDK_INT - 20) * 10000;
+        };
+    }
+
+    private static int getAttestVersion() {
+        return switch (Build.VERSION.SDK_INT) {
+            case Build.VERSION_CODES.Q, Build.VERSION_CODES.R -> 4;
+            case Build.VERSION_CODES.S, Build.VERSION_CODES.S_V2 -> 100;
+            case Build.VERSION_CODES.TIRAMISU -> 200;
+            case Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+                    Build.VERSION_CODES.VANILLA_ICE_CREAM -> 300;
+            default -> 400;
+        };
+    }
+
+    private static int getKeymasterVersion() {
+        int attestVersion = getAttestVersion();
+        return attestVersion == 4 ? 41 : attestVersion;
     }
 
     private static int getPatchLevel() {
@@ -306,15 +555,16 @@ public final class KeyboxChainGenerator {
         }
     }
 
-    private static ASN1OctetString getAsn1OctetString(ASN1Encodable[] teeEnforcedEncodables, ASN1Encodable[] softwareEnforcedEncodables, KeyGenParameters params) throws IOException {
-        ASN1Integer attestationVersion = new ASN1Integer(100);
+    private static ASN1OctetString getAsn1OctetString(ASN1Sequence teeEnforced,
+            ASN1Sequence softwareEnforced, KeyGenParameters params) throws IOException {
+        ASN1Integer attestationVersion = new ASN1Integer(getAttestVersion());
         ASN1Enumerated attestationSecurityLevel = new ASN1Enumerated(1);
-        ASN1Integer keymasterVersion = new ASN1Integer(100);
+        ASN1Integer keymasterVersion = new ASN1Integer(getKeymasterVersion());
         ASN1Enumerated keymasterSecurityLevel = new ASN1Enumerated(1);
-        ASN1OctetString attestationChallenge = new DEROctetString(params.attestationChallenge);
-        ASN1OctetString uniqueId = new DEROctetString("".getBytes());
-        ASN1Encodable softwareEnforced = new DERSequence(softwareEnforcedEncodables);
-        ASN1Sequence teeEnforced = new DERSequence(teeEnforcedEncodables);
+        byte[] challenge = params.attestationChallenge != null
+                ? params.attestationChallenge : new byte[0];
+        ASN1OctetString attestationChallenge = new DEROctetString(challenge);
+        ASN1OctetString uniqueId = new DEROctetString(new byte[0]);
 
         ASN1Encodable[] keyDescriptionEncodables = {attestationVersion, attestationSecurityLevel, keymasterVersion,
                 keymasterSecurityLevel, attestationChallenge, uniqueId, softwareEnforced, teeEnforced};
@@ -442,6 +692,8 @@ public final class KeyboxChainGenerator {
 
         public List<Integer> purpose = new ArrayList<>();
         public List<Integer> digest = new ArrayList<>();
+        public List<Integer> padding = new ArrayList<>();
+        public List<Integer> rsaOaepMgfDigest = new ArrayList<>();
 
         public byte[] attestationChallenge;
         public byte[] brand;
@@ -507,6 +759,12 @@ public final class KeyboxChainGenerator {
                     }
                     case Tag.DIGEST -> {
                         digest.add(kp.value.getDigest());
+                    }
+                    case Tag.PADDING -> {
+                        padding.add(kp.value.getPaddingMode());
+                    }
+                    case Tag.RSA_OAEP_MGF_DIGEST -> {
+                        rsaOaepMgfDigest.add(kp.value.getDigest());
                     }
                     case Tag.ATTESTATION_CHALLENGE -> attestationChallenge = kp.value.getBlob();
                     case Tag.ATTESTATION_ID_BRAND -> brand = kp.value.getBlob();

@@ -24,6 +24,12 @@
         <item quantity="other">%d Geräte verbunden</item>
     </plurals>
 
+    <!-- One-time hotspot data limit -->
+    <string name="hotspot_data_limit_channel_name">Hotspot-Datenlimit</string>
+    <string name="hotspot_data_limit_notification_title">Hotspot-Datenlimit erreicht</string>
+    <string name="hotspot_data_limit_notification_text_off">Das Datenlimit wurde erreicht. Der Hotspot wurde ausgeschaltet.</string>
+    <string name="hotspot_data_limit_notification_text">Das Datenlimit wurde erreicht.</string>
+
     <!-- Name of the nfc status bar icon. -->
     <string name="status_bar_nfc">NFC</string>
 
@@ -58,11 +64,13 @@
     <string name="status_bar_icon_packs_category_title">Icon-Pakete</string>
     <string name="status_bar_icon_packs_title">System-Icon-Pakete</string>
     <string name="status_bar_icon_packs_summary">System-Icons in Einstellungen, System UI und dem Launcher ersetzen</string>
+    <string name="status_bar_icon_packs_action">Icon-Pakete durchsuchen</string>
 
     <!-- Status bar tuner: network icons -->
     <string name="status_bar_network_icons_category_title">Netzwerk-Icons</string>
     <string name="custom_system_theme_title">Netzwerk-Icon-Themen</string>
     <string name="custom_system_theme_summary">Erscheinungsbild der Netzwerk-Icons anpassen</string>
+    <string name="status_bar_network_icon_themes_action">Netzwerk-Icons durchsuchen</string>
 
     <!-- WiFi standard numbering on statusbar -->
     <string name="status_bar_wifi_standard">WLAN-Standardnummer</string>
@@ -262,4 +270,35 @@
     <string name="app_volume_no_active_apps">Keine aktive Audiowiedergabe</string>
     <!-- Accessibility state description of an app volume slider [CHAR LIMIT=NONE] -->
     <string name="app_volume_percent"><xliff:g id="percent" example="50">%d</xliff:g> Prozent</string>
+
+    <!-- Label for current user in power menu options dialog -->
+    <string name="global_action_restart_systemui">System-UI</string>
+    <!-- Smartspace -->
+    <string name="accessibility_next_alarm">Nächster Wecker um %s</string>
+    <string name="accessibility_smartspace_page">Seite %1$d von %2$d</string>
+    <string name="smartspace_content_desc">Auf einen Blick</string>
+    <string name="smartspace_flight_qr_code">QR-Code</string>
+    <string name="quick_settings_sound_silent">Stumm</string>
+    <!-- 5G toggle in Internet Dialog -->
+    <string name="enable_fiveg">5G aktivieren</string>
+    <!-- Refresh rate QS tile -->
+    <string name="refresh_rate_tile_label">Aktualisierungsrate</string>
+    <!-- Flashlight Strength -->
+    <string name="flashlight_strength_title">Taschenlampenstärke</string>
+    <string name="flashlight_strength_turn_off">Ausschalten</string>
+    <string name="flashlight_strength_turn_on">Einschalten</string>
+    <!-- VPN tethering QS tile -->
+    <string name="vpn_tethering_label">VPN-Tethering</string>
+    <!-- Indication on the keyguard that is shown when the device is charging with a dash charger. Should match keyguard_plugged_in_dash_charging [CHAR LIMIT=40] -->
+    <string name="keyguard_indication_dash_charging_time"><xliff:g id="percentage">%2$s</xliff:g> • Schnellladen (<xliff:g id="charging_time_left" example="4 Stunden und 2 Minuten">%1$s</xliff:g> bis voll)</string>
+    <string name="keyguard_plugged_in_dash_charging"><xliff:g id="percentage">%s</xliff:g> • Schnellladen</string>
+    <!-- Indication on the keyguard that is shown when the device is charging with a warp charger. Should match keyguard_plugged_in_warp_charging [CHAR LIMIT=40] -->
+    <string name="keyguard_indication_warp_charging_time"><xliff:g id="percentage">%2$s</xliff:g> • Schnellladen (<xliff:g id="charging_time_left" example="4 Stunden und 2 Minuten">%1$s</xliff:g> bis voll)</string>
+    <string name="keyguard_plugged_in_warp_charging"><xliff:g id="percentage">%s</xliff:g> • Schnellladen</string>
+    <!-- Indication on the keyguard that is shown when the device is charging with a VOOC charger. Should match keyguard_plugged_in_vooc_charging [CHAR LIMIT=40] -->
+    <string name="keyguard_indication_vooc_charging_time"><xliff:g id="percentage">%2$s</xliff:g> • Ladevorgang mit VOOC (<xliff:g id="charging_time_left" example="4 hours and 2 minutes">%1$s</xliff:g> bis voll)</string>
+    <string name="keyguard_plugged_in_vooc_charging"><xliff:g id="percentage">%s</xliff:g> • Ladevorgang mit VOOC</string>
+    <!-- Indication on the keyguard that is shown when the device is charging with a turbo power charger. Should match keyguard_plugged_in_turbo_charging [CHAR LIMIT=40] -->
+    <string name="keyguard_indication_turbo_power_time"><xliff:g id="percentage">%2$s</xliff:g> • Schnellladen (Voll in <xliff:g id="charging_time_left" example="4 Stunden und 2 Minuten">%1$s</xliff:g>)</string>
+    <string name="keyguard_plugged_in_turbo_charging"><xliff:g id="percentage">%s</xliff:g> • Schnellladen</string>
 </resources>
